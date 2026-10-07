@@ -4,9 +4,8 @@ __pycache__/
 .deps/
 cryget-desktop
 cryget-core-test
+cryget-player-test
+cryget-mux-test
 build/
 build-windows/
-dist/*
-!dist/SHA256SUMS
-!dist/*.exe
-!dist/*.deb
+dist/
