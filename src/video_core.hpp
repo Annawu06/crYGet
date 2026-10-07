@@ -33,6 +33,8 @@ using Progress = std::function<void(uint64_t received, uint64_t total)>;
 
 std::filesystem::path checked_folder(const std::string& utf8);
 Video parse_watch_page(const std::string& page, const std::string& id);
+std::vector<std::string> expand_video_links(const std::string& input,
+                                            const std::atomic<bool>* canceled = nullptr);
 Format choose_format(const Video& video, int maximum_height, bool allow_merge = true);
 Video inspect_video(const std::string& id, const std::atomic<bool>* canceled = nullptr);
 std::filesystem::path download_video(

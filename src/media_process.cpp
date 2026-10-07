@@ -1,133 +1,153 @@
 #include "media_process.hpp"
 #include "diagnostics.hpp"
-#include <chrono>
-#include <cstdlib>
-#include <fstream>
-#include <sstream>
+#include "url_utils.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
-#include <thread>
-#include <vector>
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <csignal>
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
-extern char** environ;
-#endif
+#include <utility>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/error.h>
+#include <libavutil/mathematics.h>
+}
 
 namespace cryget {
 namespace {
-bool executable(const std::filesystem::path& path) {
-    std::error_code error;
-    if(!std::filesystem::is_regular_file(path,error))return false;
-#ifdef _WIN32
-    return true;
-#else
-    return access(path.c_str(),X_OK)==0;
-#endif
-}
-#ifdef _WIN32
-std::wstring environment(const wchar_t* name) {
-    DWORD size=GetEnvironmentVariableW(name,nullptr,0);if(!size)return {};
-    std::wstring out(size,L'\0');DWORD written=GetEnvironmentVariableW(name,out.data(),size);
-    if(!written||written>=size)return {};out.resize(written);return out;
-}
-std::wstring quote(const std::wstring& arg) {
-    std::wstring out=L"\"";size_t slashes=0;
-    for(wchar_t c:arg){
-        if(c==L'\\'){++slashes;continue;}
-        if(c==L'"')out.append(slashes*2+1,L'\\');else out.append(slashes,L'\\');
-        slashes=0;out+=c;
-    }
-    out.append(slashes*2,L'\\');return out+L"\"";
-}
-#endif
-}
-std::filesystem::path find_ffmpeg() {
-#ifdef _WIN32
-    auto override_path=environment(L"CRYGET_FFMPEG");
-    if(!override_path.empty())return executable(override_path)?std::filesystem::absolute(override_path):std::filesystem::path{};
-    std::wstring module(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,module.data(),static_cast<DWORD>(module.size()));
-    if(n&&n<module.size()) {module.resize(n);auto beside=std::filesystem::path(module).parent_path()/L"ffmpeg.exe";if(executable(beside))return beside;}
-    const auto paths=environment(L"PATH");const wchar_t separator=L';';const auto name=L"ffmpeg.exe";
-#else
-    if(const char* override_path=std::getenv("CRYGET_FFMPEG");override_path&&*override_path)
-        return executable(override_path)?std::filesystem::absolute(override_path):std::filesystem::path{};
-    const char* raw=std::getenv("PATH");const std::string paths=raw?raw:"";const char separator=':';const auto name="ffmpeg";
-#endif
-    size_t start=0;
-    while(start<paths.size()) {
-        auto end=paths.find(separator,start);if(end==decltype(paths)::npos)end=paths.size();
-        if(end>start) {
-            auto candidate=std::filesystem::path(paths.substr(start,end-start))/name;
-            if(executable(candidate))return std::filesystem::absolute(candidate);
-        }
-        start=end+1;
-    }
-    return {};
+std::string av_error(int code) {
+    char message[AV_ERROR_MAX_STRING_SIZE]{};
+    av_strerror(code,message,sizeof(message));
+    return message;
 }
 
-void merge_media(const std::filesystem::path& video,const std::filesystem::path& audio,
-                 const std::filesystem::path& output,const std::atomic<bool>& canceled) {
-    if(canceled.load())throw std::runtime_error("Download canceled");
-    auto program=find_ffmpeg();if(program.empty())throw std::runtime_error("FFmpeg is needed to combine this video's audio and picture");
-    auto diagnostic=output.parent_path()/"ffmpeg.log";
-    log_event("merge.start","ffmpeg="+program.u8string()+" output="+output.u8string());
-    int exit_code=-1;
-#ifdef _WIN32
-    std::vector<std::wstring> args={program.native(),L"-nostdin",L"-hide_banner",L"-loglevel",L"error",L"-n",L"-i",video.native(),L"-i",audio.native(),L"-map",L"0:v:0",L"-map",L"1:a:0",L"-c",L"copy",L"-movflags",L"+faststart",L"-f",L"mp4",output.native()};
-    std::wstring command;for(const auto& arg:args){if(!command.empty())command+=L' ';command+=quote(arg);}
-    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
-    HANDLE log_handle=CreateFileW(diagnostic.c_str(),GENERIC_WRITE,FILE_SHARE_READ,&security,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-    HANDLE input=CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&security,OPEN_EXISTING,0,nullptr);
-    if(log_handle==INVALID_HANDLE_VALUE||input==INVALID_HANDLE_VALUE){if(log_handle!=INVALID_HANDLE_VALUE)CloseHandle(log_handle);if(input!=INVALID_HANDLE_VALUE)CloseHandle(input);throw std::runtime_error("Cannot create FFmpeg diagnostic files");}
-    STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.dwFlags=STARTF_USESTDHANDLES;startup.hStdInput=input;startup.hStdOutput=log_handle;startup.hStdError=log_handle;
-    PROCESS_INFORMATION process{};
-    const BOOL created=CreateProcessW(program.c_str(),command.data(),nullptr,nullptr,TRUE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&process);
-    const DWORD spawn_error=GetLastError();CloseHandle(log_handle);CloseHandle(input);
-    if(!created){log_event("merge.spawn_error","win32="+std::to_string(spawn_error));throw std::runtime_error("Cannot start FFmpeg (Windows error "+std::to_string(spawn_error)+")");}
-    CloseHandle(process.hThread);
-    while(WaitForSingleObject(process.hProcess,50)==WAIT_TIMEOUT)if(canceled.load())TerminateProcess(process.hProcess,1);
-    DWORD status=1;GetExitCodeProcess(process.hProcess,&status);exit_code=static_cast<int>(status);CloseHandle(process.hProcess);
-#else
-    std::vector<std::string> args={program.string(),"-nostdin","-hide_banner","-loglevel","error","-n","-i",video.string(),"-i",audio.string(),"-map","0:v:0","-map","1:a:0","-c","copy","-movflags","+faststart","-f","mp4",output.string()};
-    std::vector<char*> argv;for(auto& arg:args)argv.push_back(arg.data());argv.push_back(nullptr);
-    posix_spawn_file_actions_t actions;
-    int rc=posix_spawn_file_actions_init(&actions);
-    if(rc)throw std::runtime_error("Cannot prepare FFmpeg process: "+std::string(std::strerror(rc)));
-    rc=posix_spawn_file_actions_addopen(&actions,STDIN_FILENO,"/dev/null",O_RDONLY,0);
-    if(!rc)rc=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,diagnostic.c_str(),O_WRONLY|O_CREAT|O_TRUNC,0600);
-    if(!rc)rc=posix_spawn_file_actions_adddup2(&actions,STDERR_FILENO,STDOUT_FILENO);
-    pid_t pid=-1;
-    if(!rc)rc=posix_spawn(&pid,program.c_str(),&actions,nullptr,argv.data(),environ);
-    posix_spawn_file_actions_destroy(&actions);
-    if(rc){log_event("merge.spawn_error","errno="+std::to_string(rc)+" "+std::strerror(rc));throw std::runtime_error("Cannot start FFmpeg: "+std::string(std::strerror(rc))+"; check the executable and its system libraries");}
-    bool terminated=false;auto terminate_at=std::chrono::steady_clock::time_point{};
-    for(;;) {
-        int status=0;const pid_t result=waitpid(pid,&status,WNOHANG);
-        if(result==pid){exit_code=WIFEXITED(status)?WEXITSTATUS(status):128+(WIFSIGNALED(status)?WTERMSIG(status):0);break;}
-        if(result<0&&errno!=EINTR)throw std::runtime_error("Cannot wait for FFmpeg");
-        if(canceled.load()) {
-            if(!terminated){kill(pid,SIGTERM);terminated=true;terminate_at=std::chrono::steady_clock::now();}
-            else if(std::chrono::steady_clock::now()-terminate_at>std::chrono::milliseconds(500))kill(pid,SIGKILL);
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+struct Input {
+    AVFormatContext* format=nullptr;
+    int stream=-1;
+    ~Input(){if(format)avformat_close_input(&format);}
+    Input(const Input&)=delete;
+    Input& operator=(const Input&)=delete;
+    Input()=default;
+    Input(Input&& other) noexcept:format(std::exchange(other.format,nullptr)),stream(other.stream){}
+    Input& operator=(Input&& other) noexcept {
+        if(this!=&other){if(format)avformat_close_input(&format);format=std::exchange(other.format,nullptr);stream=other.stream;}
+        return *this;
     }
-#endif
-    std::ifstream log(diagnostic,std::ios::binary);std::string detail(8192,'\0');log.read(detail.data(),detail.size());detail.resize(static_cast<size_t>(log.gcount()));
-    if(!detail.empty())log_event("merge.ffmpeg",detail);
-    log_event("merge.exit","code="+std::to_string(exit_code));
+};
+
+struct Output {
+    AVFormatContext* format=nullptr;
+    bool opened=false;
+    bool finished=false;
+    std::filesystem::path path;
+    ~Output(){
+        if(format){if(opened&&!(format->oformat->flags&AVFMT_NOFILE))avio_closep(&format->pb);avformat_free_context(format);}
+        if(!finished&&!path.empty()){std::error_code ignored;std::filesystem::remove(path,ignored);}
+    }
+    Output(const Output&)=delete;
+    Output& operator=(const Output&)=delete;
+    Output()=default;
+};
+
+Input open_input(const std::filesystem::path& path,AVMediaType type) {
+    Input input;
+    const auto filename=path_utf8(path);
+    int rc=avformat_open_input(&input.format,filename.c_str(),nullptr,nullptr);
+    if(rc<0)throw std::runtime_error("Cannot open downloaded media: "+av_error(rc));
+    rc=avformat_find_stream_info(input.format,nullptr);
+    if(rc<0)throw std::runtime_error("Cannot read downloaded media streams: "+av_error(rc));
+    input.stream=av_find_best_stream(input.format,type,-1,-1,nullptr,0);
+    if(input.stream<0)throw std::runtime_error(type==AVMEDIA_TYPE_VIDEO?"Downloaded file has no video stream":"Downloaded file has no audio stream");
+    return input;
+}
+
+AVStream* make_stream(AVFormatContext* output,const AVStream* input) {
+    AVStream* stream=avformat_new_stream(output,nullptr);
+    if(!stream)throw std::runtime_error("Cannot allocate MP4 output stream");
+    const int rc=avcodec_parameters_copy(stream->codecpar,input->codecpar);
+    if(rc<0)throw std::runtime_error("Cannot copy media stream settings: "+av_error(rc));
+    stream->codecpar->codec_tag=0;
+    stream->time_base=input->time_base;
+    return stream;
+}
+
+bool read_stream_packet(AVFormatContext* input,int stream,AVPacket* packet) {
+    for(;;) {
+        const int rc=av_read_frame(input,packet);
+        if(rc==AVERROR_EOF)return false;
+        if(rc<0)throw std::runtime_error("Cannot read downloaded media packet: "+av_error(rc));
+        if(packet->stream_index==stream)return true;
+        av_packet_unref(packet);
+    }
+}
+
+int64_t packet_time(const AVPacket* packet,const AVStream* stream) {
+    const int64_t stamp=packet->dts!=AV_NOPTS_VALUE?packet->dts:packet->pts;
+    return stamp==AV_NOPTS_VALUE?INT64_MAX:av_rescale_q(stamp,stream->time_base,AV_TIME_BASE_Q);
+}
+
+void write_packet(Output& output,AVPacket* packet,const AVStream* input,AVStream* destination) {
+    av_packet_rescale_ts(packet,input->time_base,destination->time_base);
+    packet->stream_index=destination->index;
+    packet->pos=-1;
+    const int rc=av_interleaved_write_frame(output.format,packet);
+    av_packet_unref(packet);
+    if(rc<0)throw std::runtime_error("Cannot write combined MP4: "+av_error(rc));
+}
+} // namespace
+
+void merge_media(const std::filesystem::path& video,const std::filesystem::path& audio,
+                 const std::filesystem::path& output_path,const std::atomic<bool>& canceled) {
     if(canceled.load())throw std::runtime_error("Download canceled");
-    if(exit_code!=0)throw std::runtime_error("FFmpeg could not combine the video and audio; see the diagnostic log");
+    if(std::filesystem::exists(output_path))throw std::runtime_error("Combined output already exists");
+    log_event("merge.start","output="+path_utf8(output_path));
+    Input video_input=open_input(video,AVMEDIA_TYPE_VIDEO);
+    Input audio_input=open_input(audio,AVMEDIA_TYPE_AUDIO);
+    AVStream* video_source=video_input.format->streams[video_input.stream];
+    AVStream* audio_source=audio_input.format->streams[audio_input.stream];
+    Output output;
+    const auto filename=path_utf8(output_path);
+    int rc=avformat_alloc_output_context2(&output.format,nullptr,"mp4",filename.c_str());
+    if(rc<0||!output.format)throw std::runtime_error("Cannot create combined MP4: "+(rc<0?av_error(rc):std::string("unsupported output")));
+    output.path=output_path;
+    AVStream* video_target=make_stream(output.format,video_source);
+    AVStream* audio_target=make_stream(output.format,audio_source);
+    if(!(output.format->oformat->flags&AVFMT_NOFILE)) {
+        rc=avio_open(&output.format->pb,filename.c_str(),AVIO_FLAG_WRITE);
+        if(rc<0)throw std::runtime_error("Cannot create combined MP4: "+av_error(rc));
+        output.opened=true;
+    }
+    AVDictionary* options=nullptr;
+    av_dict_set(&options,"movflags","+faststart",0);
+    rc=avformat_write_header(output.format,&options);
+    av_dict_free(&options);
+    if(rc<0)throw std::runtime_error("Cannot initialize combined MP4: "+av_error(rc));
+
+    AVPacket* video_packet=av_packet_alloc();
+    AVPacket* audio_packet=av_packet_alloc();
+    if(!video_packet||!audio_packet){av_packet_free(&video_packet);av_packet_free(&audio_packet);throw std::runtime_error("Cannot allocate media packet buffers");}
+    bool has_video=read_stream_packet(video_input.format,video_input.stream,video_packet);
+    bool has_audio=read_stream_packet(audio_input.format,audio_input.stream,audio_packet);
+    while(has_video||has_audio) {
+        if(canceled.load()) {
+            av_packet_free(&video_packet);av_packet_free(&audio_packet);
+            throw std::runtime_error("Download canceled");
+        }
+        const bool take_video=has_video&&(!has_audio||packet_time(video_packet,video_source)<=packet_time(audio_packet,audio_source));
+        if(take_video) {
+            write_packet(output,video_packet,video_source,video_target);
+            has_video=read_stream_packet(video_input.format,video_input.stream,video_packet);
+        } else {
+            write_packet(output,audio_packet,audio_source,audio_target);
+            has_audio=read_stream_packet(audio_input.format,audio_input.stream,audio_packet);
+        }
+    }
+    av_packet_free(&video_packet);av_packet_free(&audio_packet);
+    rc=av_write_trailer(output.format);
+    if(rc<0)throw std::runtime_error("Cannot finish combined MP4: "+av_error(rc));
+    output.finished=true;
+    log_event("merge.complete","output="+path_utf8(output_path));
 }
 } // namespace cryget

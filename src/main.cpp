@@ -37,6 +37,7 @@
 #include "i18n.hpp"
 #include "layout.hpp"
 #include "diagnostics.hpp"
+#include "url_utils.hpp"
 #include "video_core.hpp"
 #include "video_links.hpp"
 
@@ -168,7 +169,7 @@ static bool cancel_and_remove_job(const std::shared_ptr<Job>& job) {
 
 static void open_folder_in_file_manager(const fs::path& folder) {
     char program[] = "xdg-open";
-    const auto path_text = folder.u8string();
+    const auto path_text = cryget::path_utf8(folder);
     std::vector<char> path(path_text.begin(), path_text.end()); path.push_back('\0');
     char* argv[]{program, path.data(), nullptr};
     pid_t pid = -1;
@@ -318,7 +319,7 @@ static void download(const std::shared_ptr<Job>& job) {
                 if (total) job->percent = std::min(100.0, 100.0 * double(received) / double(total));
             });
         std::lock_guard lock(jobs_mutex);
-        job->saved_path = output.u8string();
+        job->saved_path = cryget::path_utf8(output);
         job->saved_size = static_cast<size_t>(std::filesystem::file_size(output));
         job->progress = size_text(job->saved_size);
         job->percent = 100;
@@ -1044,9 +1045,15 @@ class App {
         XFlush(display);
     }
     void add() {
-        auto parsed = parse_links(links.value);
+        const bool has_playlist = cryget::contains_youtube_playlist(links.value);
+        std::vector<std::string> parsed;
+        try { parsed = cryget::expand_video_links(links.value); }
+        catch (const std::exception& error) {
+            cryget::log_event("playlist.expand_error", error.what());
+            notice_key = "invalid"; return;
+        }
         if (parsed.empty()) { notice_key = "invalid"; return; }
-        try { folder.value = cryget::checked_folder(folder.value).u8string(); }
+        try { folder.value = cryget::path_utf8(cryget::checked_folder(folder.value)); }
         catch (const std::exception& error) {
             cryget::log_event("queue.folder_error", error.what());
             notice_key = "folder_invalid";
@@ -1068,7 +1075,10 @@ class App {
         }
         {
             std::lock_guard lock(preview_mutex);
-            for (const auto& job : added_jobs) preview_requests.push_back(job);
+            for (const auto& job : added_jobs) {
+                if (has_playlist) job->preview_done = true;
+                else preview_requests.push_back(job);
+            }
         }
         preview_ready.notify_all();
         notice_key = added ? "added" : "duplicate";

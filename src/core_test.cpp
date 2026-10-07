@@ -1,5 +1,6 @@
 #include "json.hpp"
 #include "video_core.hpp"
+#include "url_utils.hpp"
 #include "video_links.hpp"
 
 #include <chrono>
@@ -36,7 +37,7 @@ int main(int argc, char** argv) {
     const auto unicode_folder = std::filesystem::temp_directory_path() /
                                 std::filesystem::u8path("crYGet 路径测试 " + suffix);
     std::filesystem::create_directories(unicode_folder);
-    const auto resolved = cryget::checked_folder(unicode_folder.u8string());
+    const auto resolved = cryget::checked_folder(cryget::path_utf8(unicode_folder));
     std::filesystem::remove(unicode_folder);
     if (!resolved.is_absolute() || resolved.filename() != unicode_folder.filename()) return 5;
     bool rejected = false;

@@ -15,6 +15,21 @@ inline std::string youtube_url(const std::string& value) {
     return "https://www.youtube.com/watch?v=" + (match[4].matched ? match[4].str() : match[6].str());
 }
 
+inline bool youtube_playlist_url(const std::string& value) {
+    static const std::regex route(R"(^https?://(www\.|m\.)?youtube\.com/(playlist|watch)\?([^#]*)$)",std::regex::icase);
+    std::smatch match;
+    if(!std::regex_match(value,match,route))return false;
+    std::istringstream query(match[3].str());std::string field;
+    while(std::getline(query,field,'&'))if(field.rfind("list=",0)==0&&field.size()>15)return true;
+    return false;
+}
+
+inline bool contains_youtube_playlist(const std::string& input) {
+    std::istringstream stream(input);std::string token;
+    while(stream>>token)if(youtube_playlist_url(token))return true;
+    return false;
+}
+
 inline std::vector<std::string> parse_links(const std::string& input) {
     std::istringstream stream(input);
     std::string token;

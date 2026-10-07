@@ -1,6 +1,6 @@
 # crYGet
 
-crYGet is a desktop application for downloading YouTube videos. It is written in C++17 and provides a graphical interface for Windows and Linux. The application runs without Python, yt-dlp, or a browser extension.
+crYGet is a desktop application for downloading YouTube videos. It is written in C++20 and provides a graphical interface for Windows and Linux. The application runs without Python, yt-dlp, or a browser extension.
 
 crYGet is part of the [libcr](https://github.com/libcr) project family.
 
@@ -40,13 +40,13 @@ The packages use the updated icon. The Linux packages include AppStream metadata
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
 
-Some videos have separate audio and video streams. Install **FFmpeg** if you want crYGet to combine them. A combined MP4 stream does not need FFmpeg.
+Videos with separate audio and video streams are combined inside crYGet using the FFmpeg libraries. The FFmpeg command-line program is not launched or required. Public YouTube playlist links expand into individual downloads.
 
 ## Features
 
 ### Downloads
 
-- Add up to 100 YouTube links at a time; downloads beyond the two active slots are queued.
+- Add up to 100 YouTube video or public playlist links at a time; playlist entries are expanded into the download queue, and downloads beyond the two active slots are queued.
 - Choose the best available quality, 1080p, or 720p, and select a save folder.
 - View download progress, speed, and estimated remaining time.
 - Reorder queued downloads, retry failed downloads, and open the output folder from a download card.
@@ -60,12 +60,12 @@ Some videos have separate audio and video streams. Install **FFmpeg** if you wan
 ### Playback URL handling
 
 - Read video information and MP4 stream URLs from YouTube responses.
-- Use the bundled QuickJS engine to handle supported player signature and `n` parameter transformations.
+- Use the embedded V8 engine to handle supported player signature and `n` parameter transformations.
 - Download media without running Python, yt-dlp, or ejs.
 
 ## Use crYGet
 
-1. Paste one or more YouTube video URLs into the link field.
+1. Paste one or more YouTube video URLs or public playlist URLs into the link field.
 2. Choose a quality setting and save folder.
 3. Select **Download Video**. Additional videos will wait in the queue.
 
@@ -73,7 +73,7 @@ Some videos have separate audio and video streams. Install **FFmpeg** if you wan
 
 ### Linux
 
-Install a C++17 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, and libjpeg. Then run:
+On Ubuntu 24.04 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, `libuv1-dev`, and FFmpeg's `libavformat`, `libavcodec`, and `libavutil`. Then run:
 
 ```sh
 make
@@ -82,15 +82,17 @@ make
 
 ### Windows
 
-Build with Visual Studio's C++ workload and CMake:
+Build in an MSYS2 UCRT64 shell with CMake, Ninja, GCC, Node.js, libuv, and FFmpeg development packages:
 
-```powershell
-cmake -S . -B build -A x64
-cmake --build build --config Release
-.\build\Release\cryget-desktop.exe
+```sh
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-libuv mingw-w64-ucrt-x86_64-ffmpeg
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$MINGW_PREFIX" -DNODE_ROOT="$MINGW_PREFIX"
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/cryget-desktop.exe
 ```
 
-The repository also provides `scripts/build-windows.sh` for cross-compilation with MinGW-w64 and NSIS, and `scripts/build-release.sh` for building the release installers.
+The MSYS2 FFmpeg package is used for build verification only. Release installers need FFmpeg libraries built without GPL or nonfree components, together with the matching source and license notices. The repository also provides `scripts/build-windows.sh` for cross-compilation with MinGW-w64 and NSIS, and `scripts/build-release.sh` for building the release installers.
 
 Run the automated tests on Linux with `make test`.
 
@@ -104,4 +106,4 @@ When reporting a problem, include your operating system, the steps to reproduce 
 
 ## Third-party components
 
-crYGet bundles [QuickJS](https://bellard.org/quickjs/) and [Acorn](https://github.com/acornjs/acorn) for JavaScript processing. Their license notices are included with the installers and in `third_party/` in the source tree.
+crYGet embeds V8 through the Node.js embedding library and bundles [Acorn](https://github.com/acornjs/acorn) for player-script parsing. It links FFmpeg libraries for in-process MP4 remuxing; neither the Node.js command nor the FFmpeg command-line program is launched.

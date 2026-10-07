@@ -37,8 +37,13 @@ for icon_size in 16 32 48 64 128 256 512 1024; do
 done
 install -m 644 "$project_dir/screenshots/linux-download-queue.png" "$stage/package/usr/share/doc/cryget/screenshots/linux-download-queue.png"
 install -m 644 "$project_dir/screenshots/linux-language-menu.png" "$stage/package/usr/share/doc/cryget/screenshots/linux-language-menu.png"
-install -m 644 "$project_dir/third_party/quickjs/LICENSE" "$stage/package/usr/share/doc/cryget/quickjs.LICENSE"
 install -m 644 "$project_dir/third_party/acorn/LICENSE" "$stage/package/usr/share/doc/cryget/acorn.LICENSE"
+for notice in /usr/share/doc/nodejs/copyright /usr/share/doc/libnode*/copyright; do
+    [[ ! -f "$notice" ]] || install -m 644 "$notice" "$stage/package/usr/share/doc/cryget/$(basename "$(dirname "$notice")").copyright"
+done
+for notice in /usr/share/doc/libavformat*/copyright /usr/share/doc/libavcodec*/copyright /usr/share/doc/libavutil*/copyright; do
+    [[ ! -f "$notice" ]] || install -m 644 "$notice" "$stage/package/usr/share/doc/cryget/$(basename "$(dirname "$notice")").copyright"
+done
 
 desktop-file-validate "$stage/package/usr/share/applications/cryget.desktop"
 if command -v appstreamcli >/dev/null 2>&1; then
@@ -72,7 +77,6 @@ Priority: optional
 Architecture: $architecture
 Maintainer: crYGet contributors
 Depends: $depends
-Recommends: ffmpeg
 Description: Desktop YouTube downloader
  crYGet downloads YouTube videos with a graphical desktop interface.
 EOF

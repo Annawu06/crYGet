@@ -21,6 +21,7 @@
 
 #include "i18n.hpp"
 #include "diagnostics.hpp"
+#include "url_utils.hpp"
 #include "video_core.hpp"
 #include "video_links.hpp"
 #include "winhttp_download.hpp"
@@ -325,7 +326,7 @@ struct App {
                 });
             {
                 std::lock_guard lock(mutex);
-                task->saved_path = output.u8string();
+                task->saved_path = cryget::path_utf8(output);
                 task->saved_size = std::filesystem::file_size(output);
                 task->state = 3;
             }
@@ -404,7 +405,14 @@ struct App {
             MessageBoxW(window, wide(error.what()).c_str(), L"crYGet", MB_ICONERROR); return;
         }
         const auto input = utf8(control_text(links));
-        const auto urls = cryget::parse_links(input);
+        const bool has_playlist = cryget::contains_youtube_playlist(input);
+        std::vector<std::string> urls;
+        try { urls = cryget::expand_video_links(input); }
+        catch (const std::exception& error) {
+            cryget::log_event("playlist.expand_error", error.what());
+            MessageBoxW(window, wide(error.what()).c_str(), L"crYGet", MB_ICONERROR);
+            return;
+        }
         if (urls.empty()) {
             MessageBoxW(window, trw("invalid").c_str(), L"crYGet", MB_ICONERROR);
             return;
@@ -417,8 +425,9 @@ struct App {
                 if (std::any_of(tasks.begin(), tasks.end(), [&](const auto& task) { return task->url == url; })) continue;
                 auto task = std::make_shared<Task>();
                 task->url = url; task->folder = target; task->quality = quality_value;
+                if (has_playlist) task->preview_done = true;
                 tasks.push_back(task);
-                preview_queue.push_back(task);
+                if (!has_playlist) preview_queue.push_back(task);
             }
             preview_ready.notify_all();
             schedule();

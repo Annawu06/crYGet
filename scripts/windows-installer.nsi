@@ -10,6 +10,9 @@
 !ifndef APP_ICON
   !error "APP_ICON must point to the Windows icon"
 !endif
+!ifndef RUNTIME_DIR
+  !error "RUNTIME_DIR must point to the application runtime dependency directory"
+!endif
 
 Unicode true
 Name "crYGet"
@@ -30,6 +33,8 @@ Section "Install"
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   File /oname=cryget-desktop.exe "${APP_EXE}"
+  File "${RUNTIME_DIR}/*.dll"
+  File /nonfatal "${RUNTIME_DIR}/icudtl.dat"
   SetOutPath "$INSTDIR\licenses"
   File "${LICENSE_DIR}/*"
 
@@ -59,6 +64,8 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\crYGet"
 
   Delete "$INSTDIR\cryget-desktop.exe"
+  Delete "$INSTDIR\*.dll"
+  Delete "$INSTDIR\icudtl.dat"
   Delete "$INSTDIR\licenses\*"
   RMDir "$INSTDIR\licenses"
   Delete "$INSTDIR\Uninstall.exe"

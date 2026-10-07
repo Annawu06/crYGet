@@ -6,10 +6,10 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev ffmpeg
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ pkg-config libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libavformat-dev libavcodec-dev libavutil-dev libnode-dev libuv1-dev
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build --parallel
       - run: ctest --test-dir build --output-on-failure
@@ -18,11 +18,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - shell: pwsh
-        run: vcpkg install curl:x64-windows
-      - shell: pwsh
-        run: cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-      - shell: pwsh
-        run: cmake --build build --config Release --parallel
-      - shell: pwsh
-        run: ctest --test-dir build -C Release --output-on-failure
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-nodejs
+            mingw-w64-ucrt-x86_64-libuv
+            mingw-w64-ucrt-x86_64-ffmpeg
+      - shell: msys2 {0}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$MINGW_PREFIX" -DNODE_ROOT="$MINGW_PREFIX"
+      - shell: msys2 {0}
+        run: cmake --build build --parallel
+      - shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure

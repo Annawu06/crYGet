@@ -38,7 +38,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Size"}, {"speed", "Speed"}, {"elapsed", "Elapsed"}, {"remaining", "Remaining"},
             {"open", "Open folder"}, {"logs", "Open logs folder"}, {"retry", "Retry download"}, {"cancel", "Cancel"}, {"remove", "Remove video"},
-            {"invalid", "Use valid YouTube video links, up to 100 per batch."},
+            {"invalid", "Use valid YouTube video or playlist links, up to 100 links per batch."},
             {"folder_invalid", "Choose an existing save folder."}, {"duplicate", "These videos are already in the list."},
             {"added", "Downloads started"}, {"preview", "Loading preview…"},
             {"browse", "Browse"}, {"choose_folder", "Choose download folder"},
@@ -58,7 +58,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "大小"}, {"speed", "速度"}, {"elapsed", "已用时间"}, {"remaining", "剩余时间"},
             {"open", "打开文件夹"}, {"logs", "打开日志目录"}, {"retry", "重新下载"}, {"cancel", "取消"}, {"remove", "移除视频"},
-            {"invalid", "请输入有效的 YouTube 视频链接，每批最多 100 个。"},
+            {"invalid", "请输入有效的 YouTube 视频或播放列表链接，每批最多 100 个。"},
             {"folder_invalid", "请选择已有的保存文件夹。"}, {"duplicate", "这些视频已在列表中。"},
             {"added", "已开始下载"}, {"preview", "正在加载预览…"},
             {"browse", "浏览"}, {"choose_folder", "选择下载文件夹"},
@@ -78,7 +78,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "大小"}, {"speed", "速度"}, {"elapsed", "已用時間"}, {"remaining", "剩餘時間"},
             {"open", "開啟資料夾"}, {"logs", "開啟日誌資料夾"}, {"retry", "重新下載"}, {"cancel", "取消"}, {"remove", "移除影片"},
-            {"invalid", "請輸入有效的 YouTube 影片連結，每批最多 100 個。"},
+            {"invalid", "請輸入有效的 YouTube 影片或播放清單連結，每批最多 100 個。"},
             {"folder_invalid", "請選擇現有的儲存資料夾。"}, {"duplicate", "這些影片已在清單中。"},
             {"added", "已開始下載"}, {"preview", "正在載入預覽…"},
             {"browse", "瀏覽"}, {"choose_folder", "選擇下載資料夾"},
@@ -98,7 +98,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "大小"}, {"speed", "速度"}, {"elapsed", "已用時間"}, {"remaining", "剩餘時間"},
             {"open", "開啟資料夾"}, {"logs", "開啟日誌資料夾"}, {"retry", "重新下載"}, {"cancel", "取消"}, {"remove", "移除影片"},
-            {"invalid", "請輸入有效的 YouTube 影片連結，每批最多 100 個。"},
+            {"invalid", "請輸入有效的 YouTube 影片或播放清單連結，每批最多 100 個。"},
             {"folder_invalid", "請選擇現有的儲存資料夾。"}, {"duplicate", "這些影片已在清單中。"},
             {"added", "已開始下載"}, {"preview", "正在載入預覽…"},
             {"browse", "瀏覽"}, {"choose_folder", "選擇下載資料夾"},
@@ -118,7 +118,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Taille"}, {"speed", "Vitesse"}, {"elapsed", "Temps écoulé"}, {"remaining", "Temps restant"},
             {"open", "Ouvrir dossier"}, {"logs", "Ouvrir les journaux"}, {"retry", "Réessayer"}, {"cancel", "Annuler"}, {"remove", "Retirer la vidéo"},
-            {"invalid", "Utilisez des liens YouTube valides, 100 maximum par lot."},
+            {"invalid", "Utilisez des liens vidéo ou playlist YouTube valides, 100 maximum par lot."},
             {"folder_invalid", "Choisissez un dossier existant."}, {"duplicate", "Ces vidéos sont déjà dans la liste."},
             {"added", "Téléchargements lancés"}, {"preview", "Chargement de l’aperçu…"},
             {"browse", "Parcourir"}, {"choose_folder", "Choisir un dossier"},
@@ -138,7 +138,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Размер"}, {"speed", "Скорость"}, {"elapsed", "Прошло"}, {"remaining", "Осталось"},
             {"open", "Открыть папку"}, {"logs", "Открыть папку журналов"}, {"retry", "Повторить"}, {"cancel", "Отмена"}, {"remove", "Удалить из списка"},
-            {"invalid", "Укажите корректные ссылки YouTube, до 100 за раз."},
+            {"invalid", "Укажите ссылки на видео или плейлисты YouTube, до 100 за раз."},
             {"folder_invalid", "Выберите существующую папку."}, {"duplicate", "Эти видео уже в списке."},
             {"added", "Загрузка началась"}, {"preview", "Загрузка превью…"},
             {"browse", "Обзор"}, {"choose_folder", "Выберите папку"},
@@ -158,7 +158,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Tamaño"}, {"speed", "Velocidad"}, {"elapsed", "Transcurrido"}, {"remaining", "Restante"},
             {"open", "Abrir carpeta"}, {"logs", "Abrir carpeta de registros"}, {"retry", "Reintentar"}, {"cancel", "Cancelar"}, {"remove", "Quitar vídeo"},
-            {"invalid", "Usa enlaces válidos de YouTube, hasta 100 por lote."},
+            {"invalid", "Usa enlaces de vídeo o listas de YouTube válidos, hasta 100 por lote."},
             {"folder_invalid", "Elige una carpeta existente."}, {"duplicate", "Estos vídeos ya están en la lista."},
             {"added", "Descargas iniciadas"}, {"preview", "Cargando vista previa…"},
             {"browse", "Explorar"}, {"choose_folder", "Elegir carpeta"},
@@ -178,7 +178,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Tamanho"}, {"speed", "Velocidade"}, {"elapsed", "Decorrido"}, {"remaining", "Restante"},
             {"open", "Abrir pasta"}, {"logs", "Abrir pasta de registros"}, {"retry", "Tentar novamente"}, {"cancel", "Cancelar"}, {"remove", "Remover vídeo"},
-            {"invalid", "Use links válidos do YouTube, até 100 por lote."},
+            {"invalid", "Use links válidos de vídeos ou listas do YouTube, até 100 por lote."},
             {"folder_invalid", "Escolha uma pasta existente."}, {"duplicate", "Esses vídeos já estão na lista."},
             {"added", "Downloads iniciados"}, {"preview", "Carregando prévia…"},
             {"browse", "Procurar"}, {"choose_folder", "Escolher pasta"},
@@ -198,7 +198,7 @@ inline const Messages& messages(const std::string& locale) {
 
             {"size", "Tamanho"}, {"speed", "Velocidade"}, {"elapsed", "Decorrido"}, {"remaining", "Restante"},
             {"open", "Abrir pasta"}, {"logs", "Abrir pasta de registos"}, {"retry", "Tentar novamente"}, {"cancel", "Cancelar"}, {"remove", "Remover vídeo"},
-            {"invalid", "Use ligações válidas do YouTube, até 100 por lote."},
+            {"invalid", "Use ligações válidas de vídeos ou listas do YouTube, até 100 por lote."},
             {"folder_invalid", "Escolha uma pasta existente."}, {"duplicate", "Estes vídeos já estão na lista."},
             {"added", "Transferências iniciadas"}, {"preview", "A carregar pré-visualização…"},
             {"browse", "Procurar"}, {"choose_folder", "Escolher pasta"},

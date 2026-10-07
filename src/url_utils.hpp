@@ -1,9 +1,15 @@
 #pragma once
 #include <cctype>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
 namespace cryget {
+inline std::string path_utf8(const std::filesystem::path& path) {
+    const auto value=path.u8string();
+    return std::string(reinterpret_cast<const char*>(value.data()),value.size());
+}
+
 inline std::string url_decode(const std::string& input) {
     std::string out;
     auto hex = [](char c) -> int { if(c>='0'&&c<='9')return c-'0'; if(c>='a'&&c<='f')return c-'a'+10; if(c>='A'&&c<='F')return c-'A'+10; return -1; };
