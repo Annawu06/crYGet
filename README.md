@@ -2,14 +2,38 @@
 
 crYGet is a desktop application for downloading YouTube videos. It is written in C++17 and provides a graphical interface for Windows and Linux. The application runs without Python, yt-dlp, or a browser extension.
 
+crYGet is part of the [libcr](https://github.com/libcr) project family.
+
+## Screenshots
+
+### Windows
+
+The link input and quality controls:
+
+![crYGet link input on Windows](screenshots/windows-links.png)
+
+A video download in progress:
+
+![crYGet download progress on Windows](screenshots/windows-download-progress.png)
+
+### Linux
+
+The desktop interface, with the language menu open:
+
+![crYGet language menu on Linux](screenshots/linux-language-menu.png)
+
+The download list with two active videos and one waiting in the queue:
+
+![crYGet download queue on Linux](screenshots/linux-download-queue.png)
+
 ## Get crYGet
 
 Download the installer for your system from [Releases](https://github.com/Annawu06/crYGet/releases):
 
-| System                  | Package                           |
-| ----------------------- | --------------------------------- |
-| Windows 64-bit          | `crYGet-Setup-*-windows-x64.exe`  |
-| Ubuntu 22.04 x86-64     | `cryget_*+ubuntu22.04_amd64.deb`  |
+| System | Package |
+| --- | --- |
+| Windows 64-bit | `crYGet-Setup-*-windows-x64.exe` |
+| Ubuntu 22.04 x86-64 | `cryget_*+ubuntu22.04_amd64.deb` |
 | Debian forky/sid x86-64 | `cryget_*+debian.forky_amd64.deb` |
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
