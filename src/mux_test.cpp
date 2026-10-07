@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include "mux_test_config.hpp"
 int main(){
     if(cryget::find_ffmpeg().empty()){std::cout<<"FFmpeg unavailable; skipping merge integration test\n";return 77;}
