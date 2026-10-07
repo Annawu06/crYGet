@@ -1,0 +1,2 @@
+#pragma once
+#define CRYGET_TEST_FIXTURE_DIR "@CRYGET_FIXTURE_DIR@"
