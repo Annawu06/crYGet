@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=crYGet
+Comment=Download YouTube videos
+Comment[zh_CN]=下载 YouTube 视频
+Exec=cryget-desktop
+Icon=cryget
+Terminal=false
+Categories=Network;
+Keywords=YouTube;video;download;
+StartupNotify=true

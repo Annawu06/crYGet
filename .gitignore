@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.deps/
+cryget-desktop
+cryget-core-test
+build/
+build-windows/
+dist/*
+!dist/SHA256SUMS
+!dist/*.exe
+!dist/*.deb

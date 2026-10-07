@@ -28,13 +28,15 @@ The download list with two active videos and one waiting in the queue:
 
 ## Get crYGet
 
-Download the installer for your system from [Releases](https://github.com/Annawu06/crYGet/releases):
+Download the latest packages in this repository:
 
 | System | Package |
 | --- | --- |
-| Windows 64-bit | `crYGet-Setup-*-windows-x64.exe` |
-| Ubuntu 22.04 x86-64 | `cryget_*+ubuntu22.04_amd64.deb` |
-| Debian forky/sid x86-64 | `cryget_*+debian.forky_amd64.deb` |
+| Windows 64-bit | [Windows installer](dist/crYGet-Setup-2026.10.07-windows-x64.exe) |
+| Ubuntu 22.04 x86-64 | [Ubuntu package](dist/cryget_2026.10.07+ubuntu22.04_amd64.deb) |
+| Debian forky/sid x86-64 | [Debian package](dist/cryget_2026.10.07+debian.forky_amd64.deb) |
+
+The packages use the updated icon. The Linux packages include AppStream metadata and two screenshots for software center previews. Verify downloads with [SHA256SUMS](dist/SHA256SUMS).
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
 

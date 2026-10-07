@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Annawu06.crYGet</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>crYGet</name>
+  <summary>Download YouTube videos on your desktop</summary>
+  <summary xml:lang="zh_CN">在桌面下载 YouTube 视频</summary>
+  <developer id="io.github.annawu06">
+    <name>crYGet contributors</name>
+  </developer>
+  <description>
+    <p>crYGet downloads YouTube videos with a desktop interface. Queue multiple links, choose video quality, and follow each download's progress.</p>
+    <p>It uses native system libraries and does not require a browser extension, Python, or yt-dlp.</p>
+  </description>
+  <url type="homepage">https://github.com/Annawu06/crYGet</url>
+  <icon type="stock">cryget</icon>
+  <categories>
+    <category>Network</category>
+    <category>AudioVideo</category>
+  </categories>
+  <launchable type="desktop-id">cryget.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Annawu06/crYGet/main/screenshots/linux-download-queue.png</image>
+      <caption>Downloads and waiting videos</caption>
+      <caption xml:lang="zh_CN">下载进度与等待队列</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/Annawu06/crYGet/main/screenshots/linux-language-menu.png</image>
+      <caption>Language selection</caption>
+      <caption xml:lang="zh_CN">语言选择</caption>
+    </screenshot>
+  </screenshots>
+</component>

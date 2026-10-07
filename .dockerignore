@@ -1,0 +1,11 @@
+.deps/
+.venv/
+.git/
+build/
+build-windows/
+dist/
+cryget-desktop
+cryget-core-test
+cryget-player-test
+cryget-mux-test
+**/__pycache__/
