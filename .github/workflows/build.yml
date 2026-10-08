@@ -10,10 +10,16 @@ jobs:
     container: debian:trixie
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get update && apt-get install -y cmake g++ pkg-config libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libavformat-dev libavcodec-dev libavutil-dev libnode-dev libuv1-dev
+      - run: apt-get update && apt-get install -y cmake g++ make pkg-config dpkg-dev desktop-file-utils libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libavformat-dev libavcodec-dev libavutil-dev libnode-dev libuv1-dev
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build --parallel
       - run: ctest --test-dir build --output-on-failure
+      - run: CRYGET_VERSION=2026.10.08+debian13 OUTPUT_DIR=dist bash scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cryget-2026.10.08-debian13
+          path: dist/cryget_2026.10.08+debian13_amd64.deb
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
