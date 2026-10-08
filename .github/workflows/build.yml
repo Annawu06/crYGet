@@ -36,9 +36,43 @@ jobs:
             mingw-w64-ucrt-x86_64-nodejs
             mingw-w64-ucrt-x86_64-libuv
             mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-nsis
+            make
+            curl
+            tar
+            xz
+            diffutils
       - shell: msys2 {0}
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$MINGW_PREFIX" -DNODE_ROOT="$MINGW_PREFIX"
       - shell: msys2 {0}
         run: cmake --build build --parallel
       - shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
+      - name: Build LGPL FFmpeg and Windows installer
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz --output ffmpeg-9.0.2.tar.xz
+          mkdir -p ffmpeg-source
+          tar -xf ffmpeg-9.0.2.tar.xz --strip-components=1 -C ffmpeg-source
+          export FFMPEG_ROOT="$PWD/ffmpeg-install"
+          ./ffmpeg-source/configure \
+            --prefix="$FFMPEG_ROOT" \
+            --target-os=mingw32 --arch=x86_64 \
+            --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile \
+            --enable-shared --disable-static --disable-programs --disable-doc \
+            --disable-debug --disable-autodetect --disable-x86asm \
+            --disable-gpl --disable-version3 --disable-nonfree
+          grep -q '^#define CONFIG_GPL 0$' ffmpeg-source/config.h
+          grep -q '^#define CONFIG_NONFREE 0$' ffmpeg-source/config.h
+          make -C ffmpeg-source -j2
+          make -C ffmpeg-source install
+          cmake -S . -B build-windows-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$FFMPEG_ROOT" -DNODE_ROOT="$MINGW_PREFIX"
+          cmake --build build-windows-release --parallel
+          PATH="$FFMPEG_ROOT/bin:$PATH" ctest --test-dir build-windows-release --output-on-failure
+          FFMPEG_SOURCE_DIR="$PWD/ffmpeg-source" FFMPEG_SOURCE_ARCHIVE="$PWD/ffmpeg-9.0.2.tar.xz" NODE_ROOT="$MINGW_PREFIX" bash scripts/build-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cryget-2026.10.08-windows-x64
+          path: build-windows/crYGet-Setup.exe
+          if-no-files-found: error

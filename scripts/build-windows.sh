@@ -64,9 +64,19 @@ else
     echo "FFMPEG_ROOT must provide FFmpeg's LGPLv2.1 license text." >&2
     exit 1
 fi
-tar -czf "$license_dir/ffmpeg-source.tar.gz" --exclude=.git -C "$FFMPEG_SOURCE_DIR" .
+if [[ -n "${FFMPEG_SOURCE_ARCHIVE:-}" ]]; then
+    if [[ ! -f "$FFMPEG_SOURCE_ARCHIVE" ]]; then
+        echo "FFMPEG_SOURCE_ARCHIVE does not exist: $FFMPEG_SOURCE_ARCHIVE" >&2
+        exit 1
+    fi
+    cp "$FFMPEG_SOURCE_ARCHIVE" "$license_dir/ffmpeg-source.tar.xz"
+else
+    tar -czf "$license_dir/ffmpeg-source.tar.gz" --exclude=.git -C "$FFMPEG_SOURCE_DIR" .
+fi
 if [[ -f "$NODE_ROOT/LICENSE" ]]; then
     cp "$NODE_ROOT/LICENSE" "$license_dir/node.MIT"
+elif [[ -f "$NODE_ROOT/share/licenses/nodejs/LICENSE" ]]; then
+    cp "$NODE_ROOT/share/licenses/nodejs/LICENSE" "$license_dir/node.MIT"
 elif [[ -f "$NODE_ROOT/share/doc/node/copyright" ]]; then
     cp "$NODE_ROOT/share/doc/node/copyright" "$license_dir/node.MIT"
 else
@@ -77,6 +87,10 @@ v8_notice="$(find "$NODE_ROOT" -maxdepth 6 -type f \( -path '*/deps/v8/LICENSE' 
 if [[ -n "$v8_notice" ]]; then cp "$v8_notice" "$license_dir/v8.BSD"; else
     echo "NODE_ROOT must include V8's BSD license notice." >&2
     exit 1
+fi
+if [[ -d "$NODE_ROOT/share/licenses" ]]; then
+    mkdir -p "$license_dir/node-runtime"
+    cp -a "$NODE_ROOT/share/licenses/." "$license_dir/node-runtime/"
 fi
 while IFS= read -r -d '' notice; do
     package="$(basename "$(dirname "$notice")")"
