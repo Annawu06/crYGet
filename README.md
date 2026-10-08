@@ -32,11 +32,10 @@ Download the latest packages in this repository:
 
 | System | Package |
 | --- | --- |
-| Windows 64-bit | [Windows installer](dist/crYGet-Setup-2026.10.08-windows-x64.exe) |
-| Debian 13 x86-64 | [Debian package](dist/cryget_2026.10.08+debian13_amd64.deb) |
-| Debian forky/sid x86-64 | [Debian package](dist/cryget_2026.10.08+debian.forky_amd64.deb) |
+| Windows 64-bit | [Windows installer](https://github.com/Annawu06/crYGet/releases/download/v2026.10.08/crYGet-Setup-2026.10.08-windows-x64.exe) |
+| Debian 13 x86-64 | [Debian package](https://github.com/Annawu06/crYGet/releases/download/v2026.10.08/cryget_2026.10.08%2Bdebian13_amd64.deb) |
 
-The packages use the updated icon. The Linux packages include AppStream metadata and two screenshots for software center previews. Verify downloads with [SHA256SUMS](dist/SHA256SUMS).
+The packages use the updated icon. The Linux package includes AppStream metadata and two screenshots for software center previews.
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
 

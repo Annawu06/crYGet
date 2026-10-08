@@ -74,8 +74,9 @@ jobs:
           cmake --build build-windows-release --parallel
           PATH="$FFMPEG_ROOT/bin:$PATH" ctest --test-dir build-windows-release --output-on-failure
           FFMPEG_SOURCE_DIR="$PWD/ffmpeg-source" FFMPEG_SOURCE_ARCHIVE="$PWD/ffmpeg-9.0.2.tar.xz" NODE_ROOT="$MINGW_PREFIX" bash scripts/build-windows.sh
+          mv build-windows/crYGet-Setup.exe build-windows/crYGet-Setup-2026.10.08-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: cryget-2026.10.08-windows-x64
-          path: build-windows/crYGet-Setup.exe
+          path: build-windows/crYGet-Setup-2026.10.08-windows-x64.exe
           if-no-files-found: error
