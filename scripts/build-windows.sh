@@ -9,7 +9,16 @@ if [[ -z "${NODE_ROOT:-}" || ( ! -f "${NODE_ROOT}/include/node.h" && ! -f "${NOD
     exit 1
 fi
 
-for program in cmake ninja makensis x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-windres x86_64-w64-mingw32-objdump; do
+if [[ -n "${MSYSTEM:-}" ]]; then
+    build_tools=(cmake ninja makensis gcc g++ windres objdump)
+    objdump_tool=objdump
+    toolchain=()
+else
+    build_tools=(cmake ninja makensis x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-windres x86_64-w64-mingw32-objdump)
+    objdump_tool=x86_64-w64-mingw32-objdump
+    toolchain=("-DCMAKE_TOOLCHAIN_FILE=$project_dir/cmake/mingw-x64.cmake")
+fi
+for program in "${build_tools[@]}"; do
     if ! command -v "$program" >/dev/null 2>&1; then
         echo "Missing build tool: $program" >&2
         echo "On Debian/Ubuntu: sudo apt-get install cmake ninja-build nsis gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64" >&2
@@ -20,11 +29,11 @@ done
 cmake -S "$project_dir" -B "$build_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DNODE_ROOT="$NODE_ROOT" \
-    -DCMAKE_TOOLCHAIN_FILE="$project_dir/cmake/mingw-x64.cmake"
+    "${toolchain[@]}"
 cmake --build "$build_dir" --target cryget-desktop
 
 echo "Windows DLL imports:"
-imports="$(x86_64-w64-mingw32-objdump -p "$build_dir/cryget-desktop.exe" | grep 'DLL Name:' || true)"
+imports="$("$objdump_tool" -p "$build_dir/cryget-desktop.exe" | grep 'DLL Name:' || true)"
 echo "$imports"
 mkdir -p "$runtime_dir"
 pending=("$build_dir/cryget-desktop.exe")
@@ -49,7 +58,7 @@ while (("${#pending[@]}")); do
         fi
         cp "$source" "$runtime_dir/"
         pending+=("$source")
-    done < <(x86_64-w64-mingw32-objdump -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')
+    done < <("$objdump_tool" -p "$binary" | sed -n 's/^[[:space:]]*DLL Name: //p')
 done
 for runtime_data in "$NODE_ROOT/icudtl.dat" "$NODE_ROOT/bin/icudtl.dat"; do
     if [[ -f "$runtime_data" ]]; then cp "$runtime_data" "$runtime_dir/icudtl.dat"; break; fi
