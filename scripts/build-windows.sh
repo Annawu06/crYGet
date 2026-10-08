@@ -77,7 +77,9 @@ else
     exit 1
 fi
 v8_notice="$(find "$NODE_ROOT" -maxdepth 6 -type f \( -path '*/deps/v8/LICENSE' -o -path '*/v8/LICENSE' -o -name 'LICENSE.v8' \) -print -quit)"
-if [[ -n "$v8_notice" ]]; then cp "$v8_notice" "$license_dir/v8.BSD"; else
+if [[ -n "$v8_notice" ]]; then
+    cp "$v8_notice" "$license_dir/v8.BSD"
+elif ! grep -q -- '- V8, located at deps/v8' "$license_dir/node.MIT"; then
     echo "NODE_ROOT must include V8's BSD license notice." >&2
     exit 1
 fi
