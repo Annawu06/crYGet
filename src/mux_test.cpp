@@ -30,6 +30,7 @@ int main(){
         cryget::merge_media(fixtures/"video-fragmented.mp4",fixtures/"audio-fragmented.m4a",folder/"fragmented.mp4",stop);
         std::ifstream fragment_input(folder/"fragmented.mp4",std::ios::binary);
         const std::string fragment_bytes(std::istreambuf_iterator<char>{fragment_input},std::istreambuf_iterator<char>{});
+        fragment_input.close();
         if(fragment_bytes.find("moof")==std::string::npos||
            fragment_bytes.find("vide")==std::string::npos||
            fragment_bytes.find("soun")==std::string::npos)
