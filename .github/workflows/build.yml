@@ -53,3 +53,36 @@ jobs:
           name: cryget-2026.10.08-windows-x64
           path: build-windows/crYGet-Setup-2026.10.08-windows-x64.exe
           if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cryget-2026.10.08-debian13
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: cryget-2026.10.08-windows-x64
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v2026.10.08 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release v2026.10.08 already exists.'
+            exit 0
+          fi
+          gh release create v2026.10.08 \
+            dist/cryget_2026.10.08+debian13_amd64.deb \
+            dist/crYGet-Setup-2026.10.08-windows-x64.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title 'crYGet 2026.10.08' \
+            --notes-file RELEASE_NOTES.md
