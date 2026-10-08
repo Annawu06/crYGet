@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${CRYGET_VERSION:-2026.10.07}"
+version="${CRYGET_VERSION:-2026.10.08}"
 output_dir="$project_dir/dist"
 linux_version="${version}+debian13"
 linux_package="cryget_${linux_version}_amd64.deb"

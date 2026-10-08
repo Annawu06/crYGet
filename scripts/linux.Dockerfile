@@ -16,6 +16,6 @@ COPY third_party/ ./third_party/
 COPY assets/ ./assets/
 COPY screenshots/linux-download-queue.png screenshots/linux-language-menu.png ./screenshots/
 COPY scripts/build-linux.sh scripts/cryget.desktop scripts/cryget.metainfo.xml ./scripts/
-ARG CRYGET_VERSION=2026.10.07
+ARG CRYGET_VERSION=2026.10.08
 ENV CRYGET_VERSION=$CRYGET_VERSION
 RUN bash scripts/build-linux.sh

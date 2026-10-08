@@ -32,9 +32,9 @@ Download the latest packages in this repository:
 
 | System | Package |
 | --- | --- |
-| Windows 64-bit | [Windows installer](dist/crYGet-Setup-2026.10.07-windows-x64.exe) |
-| Debian 13 x86-64 | [Debian package](dist/cryget_2026.10.07+debian13_amd64.deb) |
-| Debian forky/sid x86-64 | [Debian package](dist/cryget_2026.10.07+debian.forky_amd64.deb) |
+| Windows 64-bit | [Windows installer](dist/crYGet-Setup-2026.10.08-windows-x64.exe) |
+| Debian 13 x86-64 | [Debian package](dist/cryget_2026.10.08+debian13_amd64.deb) |
+| Debian forky/sid x86-64 | [Debian package](dist/cryget_2026.10.08+debian.forky_amd64.deb) |
 
 The packages use the updated icon. The Linux packages include AppStream metadata and two screenshots for software center previews. Verify downloads with [SHA256SUMS](dist/SHA256SUMS).
 

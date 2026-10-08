@@ -3,7 +3,7 @@ set -euo pipefail
 umask 022
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${CRYGET_VERSION:-2026.10.07}"
+version="${CRYGET_VERSION:-2026.10.08}"
 architecture="$(dpkg --print-architecture)"
 output_dir="${OUTPUT_DIR:-$project_dir/dist}"
 package_name="cryget_${version}_${architecture}.deb"
