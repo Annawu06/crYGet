@@ -92,7 +92,10 @@ struct Engine {
         {std::lock_guard lock(timer_mutex);stopping=true;timer_changed.notify_all();}
         if(timer.joinable())timer.join();
         context.Reset();
-        if(isolate)node_runtime.initialized->platform()->DisposeIsolate(isolate);
+        if(isolate) {
+            isolate->Dispose();
+            node_runtime.initialized->platform()->UnregisterIsolate(isolate);
+        }
         if(allocator)node::FreeArrayBufferAllocator(allocator);
     }
     void reset(int seconds=3){std::lock_guard lock(timer_mutex);deadline=std::chrono::steady_clock::now()+std::chrono::seconds(seconds);}
