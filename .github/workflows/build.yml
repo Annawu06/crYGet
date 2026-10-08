@@ -63,8 +63,17 @@ jobs:
             --enable-shared --disable-static --disable-programs --disable-doc \
             --disable-debug --disable-autodetect --disable-x86asm \
             --disable-gpl --disable-version3 --disable-nonfree
-          grep -q '^#define CONFIG_GPL 0$' ffmpeg-source/config.h
-          grep -q '^#define CONFIG_NONFREE 0$' ffmpeg-source/config.h
+          config_header=""
+          for candidate in ffmpeg-source/config.h ffmpeg-source/ffbuild/config.h; do
+            if [[ -f "$candidate" ]]; then config_header="$candidate"; break; fi
+          done
+          if [[ -z "$config_header" ]]; then
+            echo "Could not find FFmpeg's generated config.h" >&2
+            find ffmpeg-source -maxdepth 3 -name config.h -print >&2
+            exit 1
+          fi
+          grep -q '^#define CONFIG_GPL 0$' "$config_header"
+          grep -q '^#define CONFIG_NONFREE 0$' "$config_header"
           make -C ffmpeg-source -j2
           make -C ffmpeg-source install
           cmake -S . -B build-windows-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$FFMPEG_ROOT" -DNODE_ROOT="$MINGW_PREFIX"
