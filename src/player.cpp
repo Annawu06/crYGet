@@ -13,6 +13,9 @@
 #include <node.h>
 #include <uv.h>
 #include <v8.h>
+#ifndef _WIN32
+#include <libplatform/libplatform.h>
+#endif
 
 extern "C" {
 extern const unsigned char cryget_acorn_source[];
@@ -23,15 +26,26 @@ namespace cryget {
 namespace {
 std::once_flag v8_once;
 struct NodeRuntime {
+#ifdef _WIN32
     decltype(node::InitializeOncePerProcess(std::vector<std::string>{})) initialized;
     ~NodeRuntime(){if(initialized)node::TearDownOncePerProcess();}
+#else
+    std::unique_ptr<v8::Platform> platform;
+    ~NodeRuntime(){ if(platform) v8::V8::Dispose(); }
+#endif
 } node_runtime;
 
 void initialize_v8() {
     std::call_once(v8_once,[]{
+#ifdef _WIN32
         node_runtime.initialized=node::InitializeOncePerProcess({"crYGet"});
         if(!node_runtime.initialized||node_runtime.initialized->early_return())
             throw std::runtime_error("Cannot initialize embedded V8 runtime");
+#else
+        node_runtime.platform=v8::platform::NewDefaultPlatform();
+        v8::V8::InitializePlatform(node_runtime.platform.get());
+        if(!v8::V8::Initialize()) throw std::runtime_error("Cannot initialize embedded V8 runtime");
+#endif
     });
 }
 
@@ -61,7 +75,7 @@ struct Value {
 struct Engine {
     v8::Isolate* isolate=nullptr;
     v8::Global<v8::Context> context;
-    node::ArrayBufferAllocator* allocator=nullptr;
+    v8::ArrayBuffer::Allocator* allocator=nullptr;
     const std::atomic<bool>* canceled=nullptr;
     std::chrono::steady_clock::time_point deadline;
     std::mutex timer_mutex;
@@ -71,16 +85,17 @@ struct Engine {
 
     explicit Engine(const std::atomic<bool>* stop,size_t memory=128*1024*1024):canceled(stop) {
         initialize_v8();
-        allocator=node::CreateArrayBufferAllocator();
+        allocator=v8::ArrayBuffer::Allocator::NewDefaultAllocator();
         if(!allocator)throw std::runtime_error("Cannot allocate JavaScript runtime memory");
         isolate=v8::Isolate::Allocate();
-        if(!isolate){node::FreeArrayBufferAllocator(allocator);allocator=nullptr;throw std::runtime_error("Cannot allocate JavaScript runtime");}
+        if(!isolate){delete allocator;allocator=nullptr;throw std::runtime_error("Cannot allocate JavaScript runtime");}
+#ifdef _WIN32
         auto* platform=node_runtime.initialized->platform();
         platform->RegisterIsolate(isolate,uv_default_loop());
+#endif
         v8::Isolate::CreateParams params;params.array_buffer_allocator=allocator;
         params.constraints.set_max_old_generation_size_in_bytes(memory);
         v8::Isolate::Initialize(isolate,params);
-        node::SetIsolateUpForNode(isolate);
         {
             v8::Isolate::Scope isolate_scope(isolate);v8::HandleScope handles(isolate);
             context.Reset(isolate,v8::Context::New(isolate));
@@ -94,9 +109,11 @@ struct Engine {
         context.Reset();
         if(isolate) {
             isolate->Dispose();
+#ifdef _WIN32
             node_runtime.initialized->platform()->UnregisterIsolate(isolate);
+#endif
         }
-        if(allocator)node::FreeArrayBufferAllocator(allocator);
+        delete allocator;
     }
     void reset(int seconds=3){std::lock_guard lock(timer_mutex);deadline=std::chrono::steady_clock::now()+std::chrono::seconds(seconds);}
     void watchdog(){
