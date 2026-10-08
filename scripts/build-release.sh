@@ -4,12 +4,12 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="${CRYGET_VERSION:-2026.10.07}"
 output_dir="$project_dir/dist"
-ubuntu_version="${version}+ubuntu24.04"
-linux_package="cryget_${ubuntu_version}_amd64.deb"
+linux_version="${version}+debian13"
+linux_package="cryget_${linux_version}_amd64.deb"
 windows_package="crYGet-Setup-${version}-windows-x64.exe"
 
 bash "$project_dir/scripts/build-windows.sh"
-docker build --build-arg "CRYGET_VERSION=$ubuntu_version" \
+docker build --build-arg "CRYGET_VERSION=$linux_version" \
     -f "$project_dir/scripts/linux.Dockerfile" \
     -t "cryget-linux-builder:$version" "$project_dir"
 

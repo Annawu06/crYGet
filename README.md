@@ -33,7 +33,7 @@ Download the latest packages in this repository:
 | System | Package |
 | --- | --- |
 | Windows 64-bit | [Windows installer](dist/crYGet-Setup-2026.10.07-windows-x64.exe) |
-| Ubuntu 22.04 x86-64 | [Ubuntu package](dist/cryget_2026.10.07+ubuntu22.04_amd64.deb) |
+| Debian 13 x86-64 | [Debian package](dist/cryget_2026.10.07+debian13_amd64.deb) |
 | Debian forky/sid x86-64 | [Debian package](dist/cryget_2026.10.07+debian.forky_amd64.deb) |
 
 The packages use the updated icon. The Linux packages include AppStream metadata and two screenshots for software center previews. Verify downloads with [SHA256SUMS](dist/SHA256SUMS).
@@ -73,7 +73,7 @@ Videos with separate audio and video streams are combined inside crYGet using th
 
 ### Linux
 
-On Ubuntu 24.04 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, `libuv1-dev`, and FFmpeg's `libavformat`, `libavcodec`, and `libavutil`. Then run:
+On Debian 13 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, `libuv1-dev`, and FFmpeg's `libavformat`, `libavcodec`, and `libavutil`. Then run:
 
 ```sh
 make
