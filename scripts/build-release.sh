@@ -4,7 +4,7 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="${CRYGET_VERSION:-2026.10.07}"
 output_dir="$project_dir/dist"
-ubuntu_version="${version}+ubuntu22.04"
+ubuntu_version="${version}+ubuntu24.04"
 linux_package="cryget_${ubuntu_version}_amd64.deb"
 windows_package="crYGet-Setup-${version}-windows-x64.exe"
 
