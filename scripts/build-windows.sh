@@ -92,12 +92,19 @@ while IFS= read -r -d '' notice; do
     cp "$notice" "$license_dir/$package.txt"
 done < <(find "$project_dir/third_party" -mindepth 2 -maxdepth 2 -name copyright -print0)
 
+nsis_path() {
+    if [[ -n "${MSYSTEM:-}" ]]; then
+        cygpath -w "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
 makensis -V2 \
-    "-DAPP_EXE=$build_dir/cryget-desktop.exe" \
-    "-DSETUP_EXE=$build_dir/crYGet-Setup.exe" \
-    "-DAPP_ICON=$project_dir/assets/cryget.ico" \
-    "-DLICENSE_DIR=$license_dir" \
-    "-DRUNTIME_DIR=$runtime_dir" \
-    "$project_dir/scripts/windows-installer.nsi"
+    "-DAPP_EXE=$(nsis_path "$build_dir/cryget-desktop.exe")" \
+    "-DSETUP_EXE=$(nsis_path "$build_dir/crYGet-Setup.exe")" \
+    "-DAPP_ICON=$(nsis_path "$project_dir/assets/cryget.ico")" \
+    "-DLICENSE_DIR=$(nsis_path "$license_dir")" \
+    "-DRUNTIME_DIR=$(nsis_path "$runtime_dir")" \
+    "$(nsis_path "$project_dir/scripts/windows-installer.nsi")"
 echo "Built: $build_dir/cryget-desktop.exe"
 echo "Installer: $build_dir/crYGet-Setup.exe"

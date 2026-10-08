@@ -33,10 +33,10 @@ Section "Install"
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   File /oname=cryget-desktop.exe "${APP_EXE}"
-  File "${RUNTIME_DIR}/*.dll"
-  File /nonfatal "${RUNTIME_DIR}/icudtl.dat"
+  File "${RUNTIME_DIR}\*.dll"
+  File /nonfatal "${RUNTIME_DIR}\icudtl.dat"
   SetOutPath "$INSTDIR\licenses"
-  File /r "${LICENSE_DIR}/*"
+  File /r "${LICENSE_DIR}\*"
 
   Delete "$SMPROGRAMS\crYGet\crYGet.lnk"
   Delete "$SMPROGRAMS\crYGet\Uninstall crYGet.lnk"
