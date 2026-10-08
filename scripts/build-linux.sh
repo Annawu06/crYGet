@@ -41,10 +41,6 @@ install -m 644 "$project_dir/third_party/acorn/LICENSE" "$stage/package/usr/shar
 for notice in /usr/share/doc/nodejs/copyright /usr/share/doc/libnode*/copyright; do
     [[ ! -f "$notice" ]] || install -m 644 "$notice" "$stage/package/usr/share/doc/cryget/$(basename "$(dirname "$notice")").copyright"
 done
-for notice in /usr/share/doc/libavformat*/copyright /usr/share/doc/libavcodec*/copyright /usr/share/doc/libavutil*/copyright; do
-    [[ ! -f "$notice" ]] || install -m 644 "$notice" "$stage/package/usr/share/doc/cryget/$(basename "$(dirname "$notice")").copyright"
-done
-
 desktop-file-validate "$stage/package/usr/share/applications/cryget.desktop"
 if command -v appstreamcli >/dev/null 2>&1; then
     appstreamcli validate --no-net "$stage/package/usr/share/metainfo/io.github.Annawu06.crYGet.metainfo.xml"

@@ -39,7 +39,7 @@ The packages use the updated icon. The Linux package includes AppStream metadata
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
 
-Videos with separate audio and video streams are combined inside crYGet using the FFmpeg libraries. The FFmpeg command-line program is not launched or required. Public YouTube playlist links expand into individual downloads.
+Videos with separate MP4 audio and video streams are combined inside crYGet. No FFmpeg executable or library is required. Public YouTube playlist links expand into individual downloads.
 
 ## Features
 
@@ -72,7 +72,7 @@ Videos with separate audio and video streams are combined inside crYGet using th
 
 ### Linux
 
-On Debian 13 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, `libuv1-dev`, and FFmpeg's `libavformat`, `libavcodec`, and `libavutil`. Then run:
+On Debian 13 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, and `libuv1-dev`. Then run:
 
 ```sh
 make
@@ -81,17 +81,17 @@ make
 
 ### Windows
 
-Build in an MSYS2 UCRT64 shell with CMake, Ninja, GCC, Node.js, libuv, and FFmpeg development packages:
+Build in an MSYS2 UCRT64 shell with CMake, Ninja, GCC, Node.js, and libuv development packages:
 
 ```sh
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-libuv mingw-w64-ucrt-x86_64-ffmpeg
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$MINGW_PREFIX" -DNODE_ROOT="$MINGW_PREFIX"
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-libuv
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNODE_ROOT="$MINGW_PREFIX"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/cryget-desktop.exe
 ```
 
-The MSYS2 FFmpeg package is used for build verification only. Release installers need FFmpeg libraries built without GPL or nonfree components, together with the matching source and license notices. The repository also provides `scripts/build-windows.sh` for cross-compilation with MinGW-w64 and NSIS, and `scripts/build-release.sh` for building the release installers.
+The repository also provides `scripts/build-windows.sh` for cross-compilation with MinGW-w64 and NSIS, and `scripts/build-release.sh` for building the release installers.
 
 Run the automated tests on Linux with `make test`.
 
@@ -105,4 +105,4 @@ When reporting a problem, include your operating system, the steps to reproduce 
 
 ## Third-party components
 
-crYGet embeds V8 through the Node.js embedding library and bundles [Acorn](https://github.com/acornjs/acorn) for player-script parsing. It links FFmpeg libraries for in-process MP4 remuxing; neither the Node.js command nor the FFmpeg command-line program is launched.
+crYGet embeds V8 through the Node.js embedding library and bundles [Acorn](https://github.com/acornjs/acorn) for player-script parsing. It combines MP4 streams with its own C++ code; the Node.js command is not launched.

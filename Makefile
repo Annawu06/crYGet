@@ -3,8 +3,8 @@ CC ?= cc
 CXXFLAGS ?= -O2 -std=c++20 -Wall -Wextra -Wpedantic
 CFLAGS ?= -O2 -DNDEBUG -std=c11
 NODE_ROOT ?= /usr
-CPPFLAGS += $(shell pkg-config --cflags x11 xft fontconfig libcurl libjpeg libavformat libavcodec libavutil libuv) -isystem $(NODE_ROOT)/include/node
-LDLIBS += $(shell pkg-config --libs x11 xft fontconfig libcurl libjpeg libavformat libavcodec libavutil libuv) -L$(NODE_ROOT)/lib -lnode -pthread -lm -ldl
+CPPFLAGS += $(shell pkg-config --cflags x11 xft fontconfig libcurl libjpeg libuv) -isystem $(NODE_ROOT)/include/node
+LDLIBS += $(shell pkg-config --libs x11 xft fontconfig libcurl libjpeg libuv) -L$(NODE_ROOT)/lib -lnode -pthread -lm -ldl
 CORE = src/video_core.cpp src/diagnostics.cpp src/player.cpp src/media_process.cpp
 HEADERS = $(wildcard src/*.hpp)
 JS_OBJECTS = build/acorn_data.o

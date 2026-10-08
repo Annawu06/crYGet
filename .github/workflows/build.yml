@@ -10,7 +10,7 @@ jobs:
     container: debian:trixie
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get update && apt-get install -y cmake g++ make pkg-config dpkg-dev desktop-file-utils libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libavformat-dev libavcodec-dev libavutil-dev libnode-dev libuv1-dev
+      - run: apt-get update && apt-get install -y cmake g++ make pkg-config dpkg-dev desktop-file-utils libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libnode-dev libuv1-dev
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build --parallel
       - run: ctest --test-dir build --output-on-failure
@@ -35,45 +35,18 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-nodejs
             mingw-w64-ucrt-x86_64-libuv
-            mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-nsis
-            make
-            curl
-            tar
-            xz
-            diffutils
       - shell: msys2 {0}
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$MINGW_PREFIX" -DNODE_ROOT="$MINGW_PREFIX"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DNODE_ROOT="$MINGW_PREFIX"
       - shell: msys2 {0}
         run: cmake --build build --parallel
       - shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
-      - name: Build LGPL FFmpeg and Windows installer
+      - name: Build Windows installer
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          curl --fail --location --silent --show-error https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz --output ffmpeg-9.0.2.tar.xz
-          mkdir -p ffmpeg-source
-          tar -xf ffmpeg-9.0.2.tar.xz --strip-components=1 -C ffmpeg-source
-          export FFMPEG_ROOT="$PWD/ffmpeg-install"
-          cd ffmpeg-source
-          ./configure \
-            --prefix="$FFMPEG_ROOT" \
-            --target-os=mingw32 --arch=x86_64 \
-            --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile \
-            --enable-shared --disable-static --disable-programs --disable-doc \
-            --disable-debug --disable-autodetect --disable-x86asm \
-            --disable-gpl --disable-version3 --disable-nonfree
-          grep -q '^#define CONFIG_GPL 0$' config.h
-          grep -q '^#define CONFIG_NONFREE 0$' config.h
-          make -j2
-          make install
-          cp COPYING.LGPLv2.1 "$FFMPEG_ROOT/"
-          cd ..
-          cmake -S . -B build-windows-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DFFMPEG_ROOT="$FFMPEG_ROOT" -DNODE_ROOT="$MINGW_PREFIX"
-          cmake --build build-windows-release --parallel
-          PATH="$FFMPEG_ROOT/bin:$PATH" ctest --test-dir build-windows-release --output-on-failure
-          FFMPEG_SOURCE_DIR="$PWD/ffmpeg-source" FFMPEG_SOURCE_ARCHIVE="$PWD/ffmpeg-9.0.2.tar.xz" NODE_ROOT="$MINGW_PREFIX" bash scripts/build-windows.sh
+          NODE_ROOT="$MINGW_PREFIX" bash scripts/build-windows.sh
           mv build-windows/crYGet-Setup.exe build-windows/crYGet-Setup-2026.10.08-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
