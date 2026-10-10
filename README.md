@@ -28,16 +28,21 @@ The download list with two active videos and one waiting in the queue:
 
 ## Get crYGet
 
-Download the latest packages in this repository:
+Download packages from the [GitHub Releases page](https://github.com/Annawu06/crYGet/releases). The latest Linux release is 2026.10.10; the latest published Windows installer is 2026.10.08.
 
 | System | Package |
 | --- | --- |
-| Windows 64-bit | [Windows installer](https://github.com/Annawu06/crYGet/releases/download/v2026.10.08/crYGet-Setup-2026.10.08-windows-x64.exe) |
-| Debian 13 x86-64 | [Debian package](https://github.com/Annawu06/crYGet/releases/download/v2026.10.08/cryget_2026.10.08%2Bdebian13_amd64.deb) |
+| Windows 64-bit | [2026.10.08 installer](https://github.com/Annawu06/crYGet/releases/download/v2026.10.08/crYGet-Setup-2026.10.08-windows-x64.exe) |
+| Debian Forky/Sid x86-64 | [2026.10.10 Debian package](https://github.com/Annawu06/crYGet/releases/download/v2026.10.10/cryget_2026.10.10%2Bdebian.forky_amd64.deb) |
 
 The packages use the updated icon. The Linux package includes AppStream metadata and two screenshots for software center previews.
 
 On Windows, run the installer and launch crYGet from the Start menu. On Linux, install the matching `.deb` package and launch crYGet from the application menu. The Linux packages install their required system libraries through the package manager.
+
+There is currently no Ubuntu package for 2026.10.10. The older Ubuntu 22.04
+package used the previous implementation. This version embeds V8 through
+Node 24, while Ubuntu 22.04 provides Node 12. The Debian package requires
+`libnode137` and should not be installed on Ubuntu.
 
 Videos with separate MP4 audio and video streams are combined inside crYGet. No FFmpeg executable or library is required. Public YouTube playlist links expand into individual downloads.
 
@@ -45,10 +50,11 @@ Videos with separate MP4 audio and video streams are combined inside crYGet. No 
 
 ### Downloads
 
-- Add up to 100 YouTube video or public playlist links at a time; playlist entries are expanded into the download queue, and downloads beyond the two active slots are queued.
+- Add up to 100 YouTube video or public playlist links at a time; playlist entries are expanded in the background with thumbnails so the window stays responsive, and downloads beyond the two active slots are queued. The browse response parser includes a generic video ID fallback. YouTube player requests try Android, embedded, and web clients with matching headers when the watch page has no usable MP4 streams.
 - Choose the best available quality, 1080p, or 720p, and select a save folder.
 - View download progress, speed, and estimated remaining time.
-- Reorder queued downloads, retry failed downloads, and open the output folder from a download card.
+- Drag videos to change download priority on Linux and Windows. The first two unfinished videos get the active slots; displaced downloads return to the queue and restart from the beginning later. Windows also provides up/down buttons.
+- Retry failed downloads and open the output folder from a download card.
 
 ### Desktop experience
 
@@ -72,7 +78,7 @@ Videos with separate MP4 audio and video streams are combined inside crYGet. No 
 
 ### Linux
 
-On Debian 13 or newer, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, and `libuv1-dev`. Then run:
+On Debian Forky/Sid with Node 24, install a C++20 compiler, Make, `pkg-config`, and development packages for X11, Xft, Fontconfig, libcurl, libjpeg, `libnode-dev`, and `libuv1-dev`. Then run:
 
 ```sh
 make
