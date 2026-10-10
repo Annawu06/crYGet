@@ -14,7 +14,7 @@ jobs:
       - run: apt-get update && apt-get install -y g++ make pkg-config dpkg-dev desktop-file-utils libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libnode-dev libuv1-dev
       - run: make -j2 test
       - run: CRYGET_VERSION=2026.10.10+debian.forky OUTPUT_DIR=dist bash scripts/build-linux.sh
-      - run: dpkg-deb --info dist/cryget_2026.10.10+debian.forky_amd64.deb && sha256sum dist/cryget_2026.10.10+debian.forky_amd64.deb > dist/SHA256SUMS
+      - run: dpkg-deb --info dist/cryget_2026.10.10+debian.forky_amd64.deb && (cd dist && sha256sum cryget_2026.10.10+debian.forky_amd64.deb > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: cryget-2026.10.10-debian-forky
