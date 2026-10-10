@@ -1,0 +1,55 @@
+name: Linux release 2026.10.10
+
+on:
+  push:
+    branches:
+      - release/linux-v2026.10.10
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: debian:forky
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y g++ make pkg-config dpkg-dev desktop-file-utils libx11-dev libxft-dev libfontconfig1-dev libcurl4-openssl-dev libjpeg-dev libnode-dev libuv1-dev
+      - run: make -j2 test
+      - run: CRYGET_VERSION=2026.10.10+debian.forky OUTPUT_DIR=dist bash scripts/build-linux.sh
+      - run: dpkg-deb --info dist/cryget_2026.10.10+debian.forky_amd64.deb && sha256sum dist/cryget_2026.10.10+debian.forky_amd64.deb > dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cryget-2026.10.10-debian-forky
+          path: |
+            dist/cryget_2026.10.10+debian.forky_amd64.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cryget-2026.10.10-debian-forky
+          path: dist
+      - name: Publish Linux release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          cd ..
+          if gh release view v2026.10.10 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release v2026.10.10 already exists.'
+            exit 0
+          fi
+          gh release create v2026.10.10 \
+            dist/cryget_2026.10.10+debian.forky_amd64.deb \
+            dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title 'crYGet 2026.10.10 (Linux)' \
+            --notes-file LINUX_RELEASE_NOTES.md

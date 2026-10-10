@@ -5,6 +5,7 @@
 #include "media_process.hpp"
 #include "url_utils.hpp"
 #include "video_links.hpp"
+#include "playlist.hpp"
 #ifdef _WIN32
 #include "winhttp_download.hpp"
 #else
@@ -30,6 +31,7 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <io.h>
 #else
 #include <unistd.h>
 #endif
@@ -96,6 +98,7 @@ Curl make_request(const std::string& url) {
     curl_easy_setopt(request.get(),CURLOPT_REDIR_PROTOCOLS,CURLPROTO_HTTPS);
 #endif
     curl_easy_setopt(request.get(),CURLOPT_USERAGENT,"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36");
+    curl_easy_setopt(request.get(),CURLOPT_REFERER,"https://www.youtube.com/");
     curl_easy_setopt(request.get(),CURLOPT_ACCEPT_ENCODING,"");
     return request;
 }
@@ -128,26 +131,48 @@ std::string fetch_text(const std::string& url,const std::string& stage,const std
 #endif
 }
 
-std::string fetch_player_response(const std::string& page,const std::string& id,const std::atomic<bool>* canceled) {
+enum class PlayerClient { Android, WebEmbedded, Web };
+
+std::string fetch_player_response(const std::string& page,const std::string& id,
+                                  const std::atomic<bool>* canceled,PlayerClient client) {
     static const std::regex key_pattern(R"re("INNERTUBE_API_KEY"\s*:\s*"([A-Za-z0-9_-]{20,60})")re");
-    std::smatch match;
-    if(!std::regex_search(page,match,key_pattern))throw std::runtime_error("YouTube player API key was not found");
-    const std::string url="https://www.youtube.com/youtubei/v1/player?key="+match[1].str();
-    const std::string body="{\"videoId\":\""+id+"\",\"context\":{\"client\":{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.38\",\"androidSdkVersion\":35}}}";
+    static const std::regex version_pattern(R"re("INNERTUBE_CLIENT_VERSION"\s*:\s*"([0-9.]+)")re");
+    std::smatch key_match,version_match;
+    if(!std::regex_search(page,key_match,key_pattern))throw std::runtime_error("YouTube player API key was not found");
+    const std::string name = client == PlayerClient::Android ? "ANDROID" :
+                             client == PlayerClient::WebEmbedded ? "WEB_EMBEDDED_PLAYER" : "WEB";
+    const std::string number = client == PlayerClient::Android ? "3" :
+                               client == PlayerClient::WebEmbedded ? "56" : "1";
+    const std::string version = client == PlayerClient::Android ? "21.26.364" :
+        (std::regex_search(page,version_match,version_pattern) ? version_match[1].str() : "");
+    if(version.empty())throw std::runtime_error("YouTube web client version was not found");
+    const std::string agent = client == PlayerClient::Android ?
+        "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip" :
+        client == PlayerClient::WebEmbedded ?
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)" : "";
+    const std::string url="https://www.youtube.com/youtubei/v1/player?key="+key_match[1].str();
+    const std::string extra = client == PlayerClient::Android ?
+        ",\"androidSdkVersion\":30,\"osName\":\"Android\",\"osVersion\":\"11\"" : "";
+    const std::string body="{\"videoId\":\""+id+"\",\"context\":{\"client\":{\"clientName\":\""+
+        name+"\",\"clientVersion\":\""+version+"\""+extra+"}}}";
+    log_event("video.player.client",name+" version="+version);
 #ifdef _WIN32
     std::string response;
     auto result=winhttp_post_json(url,body,canceled,[&](const char* bytes,size_t count,uint64_t,uint64_t){
         if(count>12*1024*1024-response.size())throw std::runtime_error("Player response is too large");
         response.append(bytes,count);
-    });
+    },agent,number,version);
     log_event("video.player.http","http="+std::to_string(result.status)+" bytes="+std::to_string(response.size()));
     return response;
 #else
     Curl request=make_request(url);Memory response;Transfer transfer{canceled};
+    if(!agent.empty())curl_easy_setopt(request.get(),CURLOPT_USERAGENT,agent.c_str());
     curl_easy_setopt(request.get(),CURLOPT_TIMEOUT,30L);
     curl_easy_setopt(request.get(),CURLOPT_POSTFIELDS,body.c_str());
     curl_easy_setopt(request.get(),CURLOPT_POSTFIELDSIZE,static_cast<long>(body.size()));
     curl_slist* headers=curl_slist_append(nullptr,"Content-Type: application/json");
+    headers=curl_slist_append(headers,("X-YouTube-Client-Name: "+number).c_str());
+    headers=curl_slist_append(headers,("X-YouTube-Client-Version: "+version).c_str());
     curl_easy_setopt(request.get(),CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(request.get(),CURLOPT_WRITEFUNCTION,receive_text);
     curl_easy_setopt(request.get(),CURLOPT_WRITEDATA,&response);
@@ -172,37 +197,6 @@ std::string extract_object(const std::string& page,size_t opening) {
     throw std::runtime_error("Video metadata is incomplete");
 }
 
-std::string find_json_object(const std::string& page, const std::string& marker) {
-    const auto at=page.find(marker);
-    if(at==std::string::npos)throw std::runtime_error("YouTube playlist data is unavailable");
-    return extract_object(page,page.find('{',at+marker.size()));
-}
-
-void collect_playlist_items(const Json& value,std::vector<std::string>& ids,std::string& continuation) {
-    if(value.kind==Json::Kind::Object) {
-        const auto& renderer=value.get("playlistVideoRenderer");
-        const auto& id=renderer.get("videoId");
-        if(id.is_string()&&id.string.size()==11)ids.push_back(id.string);
-        const auto& endpoint=value.get("continuationItemRenderer").get("continuationEndpoint").get("continuationCommand").get("token");
-        if(continuation.empty()&&endpoint.is_string())continuation=endpoint.string;
-        for(const auto& entry:value.object)collect_playlist_items(entry.second,ids,continuation);
-    } else if(value.kind==Json::Kind::Array) {
-        for(const auto& entry:value.array)collect_playlist_items(entry,ids,continuation);
-    }
-}
-
-std::string playlist_id(const std::string& url) {
-    static const std::regex route(R"(^https?://(?:www\.|m\.)?youtube\.com/(?:playlist|watch)\?([^#]*)$)",std::regex::icase);
-    std::smatch match;
-    if(!std::regex_match(url,match,route))return {};
-    std::istringstream query(match[1].str());std::string field;
-    while(std::getline(query,field,'&'))if(field.rfind("list=",0)==0) {
-        const auto value=field.substr(5);
-        if(value.size()>=10&&value.size()<=80&&std::all_of(value.begin(),value.end(),[](unsigned char c){return std::isalnum(c)||c=='_'||c=='-';}))return value;
-    }
-    return {};
-}
-
 std::string json_quote(const std::string& value) {
     std::string out="\"";
     for(unsigned char c:value) {
@@ -213,13 +207,14 @@ std::string json_quote(const std::string& value) {
     out+='"';return out;
 }
 
-std::string post_json(const std::string& url,const std::string& body,const std::atomic<bool>* canceled) {
+std::string post_json(const std::string& url,const std::string& body,const std::atomic<bool>* canceled,
+                      const std::string& client_version) {
 #ifdef _WIN32
     std::string response;
     const auto result=winhttp_post_json(url,body,canceled,[&](const char* bytes,size_t count,uint64_t,uint64_t){
         if(count>12*1024*1024-response.size())throw std::runtime_error("YouTube playlist response is too large");
         response.append(bytes,count);
-    });
+    },{},"1",client_version);
     if(result.status!=200)throw std::runtime_error("Cannot read the next YouTube playlist page");
     return response;
 #else
@@ -228,6 +223,8 @@ std::string post_json(const std::string& url,const std::string& body,const std::
     curl_easy_setopt(request.get(),CURLOPT_POSTFIELDS,body.c_str());
     curl_easy_setopt(request.get(),CURLOPT_POSTFIELDSIZE,static_cast<long>(body.size()));
     curl_slist* headers=curl_slist_append(nullptr,"Content-Type: application/json");
+    headers=curl_slist_append(headers,"X-YouTube-Client-Name: 1");
+    headers=curl_slist_append(headers,("X-YouTube-Client-Version: "+client_version).c_str());
     curl_easy_setopt(request.get(),CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(request.get(),CURLOPT_WRITEFUNCTION,receive_text);
     curl_easy_setopt(request.get(),CURLOPT_WRITEDATA,&response);
@@ -241,23 +238,88 @@ std::string post_json(const std::string& url,const std::string& body,const std::
 #endif
 }
 
-std::vector<std::string> fetch_playlist(const std::string& id,const std::atomic<bool>* canceled) {
-    const auto page=fetch_text("https://www.youtube.com/playlist?list="+id,"playlist.page",canceled);
-    const auto initial=JsonParser(find_json_object(page,"ytInitialData")).parse();
-    std::vector<std::string> ids;std::string continuation;
-    collect_playlist_items(initial,ids,continuation);
+std::vector<std::string> fetch_mix_playlist(const std::string& id,const std::string& seed,
+                                            const std::atomic<bool>* canceled) {
+    const auto page=fetch_text("https://www.youtube.com/watch?v="+seed+"&list="+id,
+                               "playlist.mix.page",canceled);
+    const auto data=parse_playlist_page(page);
+    auto panel=collect_mix_playlist_page(data,id);
+    if(panel.ids.empty())throw std::runtime_error("YouTube Mix did not provide an accessible video list");
     static const std::regex key_pattern(R"re("INNERTUBE_API_KEY"\s*:\s*"([A-Za-z0-9_-]{20,60})")re");
     static const std::regex version_pattern(R"re("INNERTUBE_CLIENT_VERSION"\s*:\s*"([0-9.]+)")re");
     std::smatch key_match,version_match;
-    if(!continuation.empty()&&(!std::regex_search(page,key_match,key_pattern)||!std::regex_search(page,version_match,version_pattern)))
-        throw std::runtime_error("YouTube playlist pagination data is unavailable");
+    const bool has_config=std::regex_search(page,key_match,key_pattern)&&
+                          std::regex_search(page,version_match,version_pattern);
+    std::vector<std::string> ids;
+    std::unordered_set<std::string> seen;
+    for(const auto& video_id:panel.ids)if(seen.insert(video_id).second)ids.push_back(video_id);
+    if(has_config) {
+        const std::string next="https://www.youtube.com/youtubei/v1/next?key="+key_match[1].str();
+        for(size_t page_number=0;page_number<200&&ids.size()<5000;++page_number) {
+            if(canceled&&canceled->load())throw std::runtime_error("Download canceled");
+            const std::string body="{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":"+
+                json_quote(version_match[1].str())+"}},\"playlistId\":"+json_quote(id)+
+                ",\"videoId\":"+json_quote(panel.last_id)+",\"index\":"+
+                std::to_string(panel.next_index)+",\"params\":"+json_quote(panel.next_params)+"}";
+            const auto response=post_json(next,body,canceled,version_match[1].str());
+            auto next_panel=collect_mix_playlist_page(JsonParser(response).parse(),id);
+            if(next_panel.ids.empty())break;
+            size_t added=0;
+            for(const auto& video_id:next_panel.ids)if(seen.insert(video_id).second) {
+                ids.push_back(video_id);++added;
+                if(ids.size()==5000)break;
+            }
+            if(!added||next_panel.last_id==panel.last_id)break;
+            panel=std::move(next_panel);
+        }
+    }
+    std::vector<std::string> urls;urls.reserve(ids.size());
+    for(const auto& video_id:ids)urls.push_back("https://www.youtube.com/watch?v="+video_id);
+    log_event("playlist.mix.expanded","id="+id+" videos="+std::to_string(urls.size()));
+    return urls;
+}
+
+std::vector<std::string> fetch_playlist(const std::string& id,const std::string& requested_seed,
+                                        const std::atomic<bool>* canceled) {
+    if(id.rfind("RD",0)==0) {
+        std::string seed=requested_seed;
+        if(seed.empty()&&id.size()==13&&valid_playlist_video_id(id.substr(2)))seed=id.substr(2);
+        if(seed.empty()&&id.size()==15&&id.rfind("RDMM",0)==0&&
+           valid_playlist_video_id(id.substr(4)))seed=id.substr(4);
+        if(valid_playlist_video_id(seed))return fetch_mix_playlist(id,seed,canceled);
+    }
+    const auto page=fetch_text("https://www.youtube.com/playlist?list="+id,"playlist.page",canceled);
+    std::vector<std::string> ids;std::string continuation;
+    try { collect_playlist_items(parse_playlist_page(page),ids,continuation); }
+    catch (const std::exception& error) { log_event("playlist.page.parse_error", error.what()); }
+    log_event("playlist.page.items", "id="+id+" count="+std::to_string(ids.size()));
+    static const std::regex key_pattern(R"re("INNERTUBE_API_KEY"\s*:\s*"([A-Za-z0-9_-]{20,60})")re");
+    static const std::regex version_pattern(R"re("INNERTUBE_CLIENT_VERSION"\s*:\s*"([0-9.]+)")re");
+    std::smatch key_match,version_match;
+    const bool has_config=std::regex_search(page,key_match,key_pattern)&&std::regex_search(page,version_match,version_pattern);
+    log_event("playlist.config", "id="+id+" api_key="+(key_match.empty()?"no":"yes")+
+              " client_version="+(version_match.empty()?"no":"yes"));
     const std::string browse="https://www.youtube.com/youtubei/v1/browse?key="+(key_match.empty()?std::string{}:key_match[1].str());
+    if(ids.empty()&&has_config) {
+        // Some page variants omit the list from ytInitialData. Request the
+        // public playlist using the same browse API used for later pages.
+        const std::string body="{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":"+json_quote(version_match[1].str())+"}},\"browseId\":"+json_quote("VL"+id)+"}";
+        const auto response=post_json(browse,body,canceled,version_match[1].str());
+        continuation.clear();
+        const auto data=JsonParser(response).parse();
+        collect_playlist_items(data,ids,continuation);
+        if(ids.empty())collect_playlist_video_ids(data,ids);
+        log_event("playlist.browse.items", "id="+id+" count="+std::to_string(ids.size())+
+                  " shape="+playlist_response_shape(data));
+    }
+    if(!continuation.empty()&&!has_config)
+        throw std::runtime_error("YouTube playlist pagination data is unavailable");
     std::unordered_set<std::string> seen_tokens;
     while(!continuation.empty()&&ids.size()<5000) {
         if(canceled&&canceled->load())throw std::runtime_error("Download canceled");
         if(!seen_tokens.insert(continuation).second)throw std::runtime_error("YouTube playlist pagination repeated");
         const std::string body="{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":"+json_quote(version_match[1].str())+"}},\"continuation\":"+json_quote(continuation)+"}";
-        const auto response=post_json(browse,body,canceled);
+        const auto response=post_json(browse,body,canceled,version_match[1].str());
         const auto data=JsonParser(response).parse();continuation.clear();collect_playlist_items(data,ids,continuation);
     }
     if(ids.empty())throw std::runtime_error("The YouTube playlist has no accessible videos");
@@ -356,8 +418,8 @@ struct TemporaryDirectory {
 };
 uint64_t fetch_media(const std::string& url,const std::filesystem::path& path,const std::atomic<bool>& canceled,const Progress& progress,uint64_t expected_length) {
     if(canceled.load())throw std::runtime_error("Download canceled");
-    constexpr uint64_t chunk_size=8*1024*1024;
 #ifdef _WIN32
+    constexpr uint64_t chunk_size=1024*1024;
     FILE* file=_wfopen(path.c_str(),L"wb");
     if(!file){const int error=errno;log_event("download.file_error",path_utf8(path)+" errno="+std::to_string(error));
         throw std::runtime_error("Cannot create download file: "+std::error_code(error,std::generic_category()).message());}
@@ -366,11 +428,46 @@ uint64_t fetch_media(const std::string& url,const std::filesystem::path& path,co
         size_t chunks=0;
         for(;;) {
             const uint64_t last=total?std::min(total-1,received_total+chunk_size-1):received_total+chunk_size-1;
-            const auto result=winhttp_get_range(url,received_total,last,&canceled,
-                [&,base=received_total](const char* bytes,size_t count,uint64_t received,uint64_t){
-                    if(std::fwrite(bytes,1,count,file)!=count)throw std::runtime_error("Cannot write download file");
-                    if(progress)progress(base+received,total);
-                });
+            HttpResult result;
+            int retries=0,stalled_retries=0;
+            for(;;) {
+                uint64_t partial_received=0;
+                try {
+                    result=winhttp_get_range(url,received_total,last,&canceled,
+                        [&,base=received_total](const char* bytes,size_t count,uint64_t received,uint64_t reported_total){
+                            if(std::fwrite(bytes,1,count,file)!=count)throw std::runtime_error("Cannot write download file");
+                            partial_received+=count;
+                            if(reported_total)total=reported_total;
+                            if(progress)progress(base+received,total);
+                        });
+                    break;
+                } catch(const std::exception& error) {
+                    const std::string message=error.what();
+                    const bool interrupted=message=="Incomplete media byte range" ||
+                                           message.find("Windows error 12002")!=std::string::npos ||
+                                           message.find("Windows error 12007")!=std::string::npos ||
+                                           message.find("Windows error 12029")!=std::string::npos ||
+                                           message.find("Windows error 12030")!=std::string::npos ||
+                                           message.find("Windows error 12031")!=std::string::npos;
+                    if(canceled.load()||!interrupted)throw;
+                    const uint64_t remaining=last-received_total+1;
+                    const bool keep_partial=partial_received>0&&partial_received<remaining;
+                    if(++retries>12 || (!keep_partial && ++stalled_retries>3))throw;
+                    if(keep_partial)stalled_retries=0;
+                    log_event("download.retry","offset="+std::to_string(received_total)+
+                              " kept="+std::to_string(keep_partial?partial_received:0)+
+                              " attempt="+std::to_string(retries)+" reason="+message);
+                    if(std::fflush(file)!=0 ||
+                       (!keep_partial && (_chsize_s(_fileno(file),received_total)!=0 ||
+                                         _fseeki64(file,static_cast<__int64>(received_total),SEEK_SET)!=0)))
+                        throw std::runtime_error("Cannot reset interrupted download");
+                    if(keep_partial)received_total+=partial_received;
+                    for(int step=0;step<5*std::min(retries,4);++step) {
+                        if(canceled.load())throw std::runtime_error("Download canceled");
+                        Sleep(100);
+                    }
+                }
+            }
             ++chunks;
             if(result.status==200) {
                 received_total=result.received;
@@ -390,6 +487,7 @@ uint64_t fetch_media(const std::string& url,const std::filesystem::path& path,co
         return received_total;
     } catch(...) {if(file)std::fclose(file);throw;}
 #else
+    constexpr uint64_t chunk_size=8*1024*1024;
     auto request=make_request(url);
     FILE* file=std::fopen(path.c_str(),"wb");
     if(!file){const int e=errno;log_event("download.file_error",path_utf8(path)+" errno="+std::to_string(e));throw std::runtime_error("Cannot create download file: "+std::error_code(e,std::generic_category()).message());}
@@ -494,8 +592,10 @@ std::vector<std::string> expand_video_links(const std::string& input,const std::
     std::unordered_set<std::string> seen;size_t tokens=0;
     while(stream>>token) {
         if(++tokens>100)return {};
-        if(auto list=playlist_id(token);!list.empty()) {
-            for(auto& url:fetch_playlist(list,canceled))if(seen.insert(url).second) {
+        if(auto list=youtube_playlist_id(token);!list.empty()) {
+            const auto video_url=youtube_url(token);
+            const auto seed=video_url.empty()?std::string{}:video_url.substr(video_url.find_last_of('=')+1);
+            for(auto& url:fetch_playlist(list,seed,canceled))if(seen.insert(url).second) {
                 if(output.size()>=5000)throw std::runtime_error("A batch can contain at most 5000 playlist videos");
                 output.push_back(std::move(url));
             }
@@ -533,21 +633,31 @@ Video inspect_video(const std::string& id,const std::atomic<bool>* canceled) {
     std::string page_error;
     try { video=parse_watch_page(page,id); }
     catch(const std::exception& error) { page_error=error.what(); }
-    const bool needs_fallback=!page_error.empty()||video.formats.empty()||
-        std::none_of(video.formats.begin(),video.formats.end(),[](const Format& f){return f.has_audio;});
+    const auto usable_mp4=[](const Video& candidate) {
+        return !candidate.formats.empty()&&(!candidate.audio_formats.empty()||
+            std::any_of(candidate.formats.begin(),candidate.formats.end(),[](const Format& f){return f.has_audio;}));
+    };
+    const bool needs_fallback=!page_error.empty()||!usable_mp4(video);
+    std::string fallback_error;
     if(needs_fallback) {
-        try {
-            auto response=fetch_player_response(page,id,canceled);
-            auto alternative=parse_player_data(JsonParser(response).parse(),id,page);
-            if(!alternative.formats.empty())video=std::move(alternative);
-            else if(!page_error.empty())throw std::runtime_error(page_error);
-        } catch(const std::exception& error) {
-            log_event("video.player.fallback_error",error.what());
-            if(!page_error.empty())throw std::runtime_error(page_error);
+        for(const auto client:{PlayerClient::Android,PlayerClient::WebEmbedded,PlayerClient::Web}) {
+            try {
+                auto response=fetch_player_response(page,id,canceled,client);
+                auto alternative=parse_player_data(JsonParser(response).parse(),id,page);
+                if(usable_mp4(alternative)) { video=std::move(alternative); break; }
+                log_event("video.player.empty","No usable MP4 streams");
+            } catch(const std::exception& error) {
+                if(canceled&&canceled->load())throw;
+                fallback_error=error.what();
+                log_event("video.player.fallback_error",fallback_error);
+            }
         }
     }
-    if(video.formats.empty()&&video.audio_formats.empty())
+    if(!usable_mp4(video)) {
+        if(!page_error.empty())throw std::runtime_error(page_error);
+        if(!fallback_error.empty())throw std::runtime_error(fallback_error);
         throw std::runtime_error("YouTube did not expose downloadable MP4 URLs for this video");
+    }
     log_event("video.inspect.ready",id+" video_formats="+std::to_string(video.formats.size())+" audio_formats="+std::to_string(video.audio_formats.size()));return video;
 }
 std::filesystem::path download_video(const Video& video,const Format& format,const std::filesystem::path& folder,std::atomic<bool>& canceled,Progress progress) {

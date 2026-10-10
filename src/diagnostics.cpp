@@ -48,15 +48,18 @@ FILE* open_append(const std::filesystem::path& path) {
 std::string timestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto value = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
+    std::tm utc{}, local{};
 #ifdef _WIN32
     gmtime_s(&utc, &value);
+    localtime_s(&local, &value);
 #else
     gmtime_r(&value, &utc);
+    localtime_r(&value, &local);
 #endif
-    char buffer[32]{};
+    char buffer[32]{}, local_buffer[32]{};
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
-    return buffer;
+    std::strftime(local_buffer, sizeof(local_buffer), "%Y-%m-%d %H:%M:%S", &local);
+    return std::string(buffer) + " (local " + local_buffer + ")";
 }
 
 std::string single_line(std::string text) {

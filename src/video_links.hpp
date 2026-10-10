@@ -1,6 +1,7 @@
 #pragma once
 
 #include <regex>
+#include "url_utils.hpp"
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -15,13 +16,19 @@ inline std::string youtube_url(const std::string& value) {
     return "https://www.youtube.com/watch?v=" + (match[4].matched ? match[4].str() : match[6].str());
 }
 
+inline std::string youtube_playlist_id(const std::string& value) {
+    static const std::regex route(R"(^https?://(?:(?:www\.|m\.|music\.)?youtube\.com/(?:playlist|watch)|(?:www\.)?youtu\.be/[A-Za-z0-9_-]{11})\?[^\s]*$)", std::regex::icase);
+    if (!std::regex_match(value, route)) return {};
+    const auto id = url_parameter(value, "list");
+    if (id.size() < 10 || id.size() > 80) return {};
+    for (unsigned char c : id)
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) return {};
+    return id;
+}
+
 inline bool youtube_playlist_url(const std::string& value) {
-    static const std::regex route(R"(^https?://(www\.|m\.)?youtube\.com/(playlist|watch)\?([^#]*)$)",std::regex::icase);
-    std::smatch match;
-    if(!std::regex_match(value,match,route))return false;
-    std::istringstream query(match[3].str());std::string field;
-    while(std::getline(query,field,'&'))if(field.rfind("list=",0)==0&&field.size()>15)return true;
-    return false;
+    return !youtube_playlist_id(value).empty();
 }
 
 inline bool contains_youtube_playlist(const std::string& input) {

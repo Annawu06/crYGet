@@ -40,7 +40,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Open folder"}, {"logs", "Open logs folder"}, {"retry", "Retry download"}, {"cancel", "Cancel"}, {"remove", "Remove video"},
             {"invalid", "Use valid YouTube video or playlist links, up to 100 links per batch."},
             {"folder_invalid", "Choose an existing save folder."}, {"duplicate", "These videos are already in the list."},
-            {"added", "Downloads started"}, {"preview", "Loading preview…"},
+            {"added", "Downloads started"}, {"preview", "Loading preview…"}, {"playlist_loading", "Loading playlist…"},
             {"browse", "Browse"}, {"choose_folder", "Choose download folder"},
             {"up", "Up"}, {"use", "Use this folder"},
             {"active_count", "downloading"}, {"waiting_count", "waiting"}, {"done_count", "finished"}
@@ -60,7 +60,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "打开文件夹"}, {"logs", "打开日志目录"}, {"retry", "重新下载"}, {"cancel", "取消"}, {"remove", "移除视频"},
             {"invalid", "请输入有效的 YouTube 视频或播放列表链接，每批最多 100 个。"},
             {"folder_invalid", "请选择已有的保存文件夹。"}, {"duplicate", "这些视频已在列表中。"},
-            {"added", "已开始下载"}, {"preview", "正在加载预览…"},
+            {"added", "已开始下载"}, {"preview", "正在加载预览…"}, {"playlist_loading", "正在读取播放列表…"},
             {"browse", "浏览"}, {"choose_folder", "选择下载文件夹"},
             {"up", "上一级"}, {"use", "使用此文件夹"},
             {"active_count", "下载中"}, {"waiting_count", "等待中"}, {"done_count", "已完成"}
@@ -80,7 +80,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "開啟資料夾"}, {"logs", "開啟日誌資料夾"}, {"retry", "重新下載"}, {"cancel", "取消"}, {"remove", "移除影片"},
             {"invalid", "請輸入有效的 YouTube 影片或播放清單連結，每批最多 100 個。"},
             {"folder_invalid", "請選擇現有的儲存資料夾。"}, {"duplicate", "這些影片已在清單中。"},
-            {"added", "已開始下載"}, {"preview", "正在載入預覽…"},
+            {"added", "已開始下載"}, {"preview", "正在載入預覽…"}, {"playlist_loading", "正在讀取播放清單…"},
             {"browse", "瀏覽"}, {"choose_folder", "選擇下載資料夾"},
             {"up", "上一級"}, {"use", "使用此資料夾"},
             {"active_count", "下載中"}, {"waiting_count", "等候中"}, {"done_count", "已完成"}
@@ -100,7 +100,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "開啟資料夾"}, {"logs", "開啟日誌資料夾"}, {"retry", "重新下載"}, {"cancel", "取消"}, {"remove", "移除影片"},
             {"invalid", "請輸入有效的 YouTube 影片或播放清單連結，每批最多 100 個。"},
             {"folder_invalid", "請選擇現有的儲存資料夾。"}, {"duplicate", "這些影片已在清單中。"},
-            {"added", "已開始下載"}, {"preview", "正在載入預覽…"},
+            {"added", "已開始下載"}, {"preview", "正在載入預覽…"}, {"playlist_loading", "正在讀取播放清單…"},
             {"browse", "瀏覽"}, {"choose_folder", "選擇下載資料夾"},
             {"up", "上一層"}, {"use", "使用此資料夾"},
             {"active_count", "下載中"}, {"waiting_count", "等候中"}, {"done_count", "已完成"}
@@ -120,7 +120,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Ouvrir dossier"}, {"logs", "Ouvrir les journaux"}, {"retry", "Réessayer"}, {"cancel", "Annuler"}, {"remove", "Retirer la vidéo"},
             {"invalid", "Utilisez des liens vidéo ou playlist YouTube valides, 100 maximum par lot."},
             {"folder_invalid", "Choisissez un dossier existant."}, {"duplicate", "Ces vidéos sont déjà dans la liste."},
-            {"added", "Téléchargements lancés"}, {"preview", "Chargement de l’aperçu…"},
+            {"added", "Téléchargements lancés"}, {"preview", "Chargement de l’aperçu…"}, {"playlist_loading", "Chargement de la playlist…"},
             {"browse", "Parcourir"}, {"choose_folder", "Choisir un dossier"},
             {"up", "Parent"}, {"use", "Utiliser ce dossier"},
             {"active_count", "en cours"}, {"waiting_count", "en attente"}, {"done_count", "terminées"}
@@ -140,7 +140,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Открыть папку"}, {"logs", "Открыть папку журналов"}, {"retry", "Повторить"}, {"cancel", "Отмена"}, {"remove", "Удалить из списка"},
             {"invalid", "Укажите ссылки на видео или плейлисты YouTube, до 100 за раз."},
             {"folder_invalid", "Выберите существующую папку."}, {"duplicate", "Эти видео уже в списке."},
-            {"added", "Загрузка началась"}, {"preview", "Загрузка превью…"},
+            {"added", "Загрузка началась"}, {"preview", "Загрузка превью…"}, {"playlist_loading", "Загрузка плейлиста…"},
             {"browse", "Обзор"}, {"choose_folder", "Выберите папку"},
             {"up", "Выше"}, {"use", "Использовать папку"},
             {"active_count", "загружается"}, {"waiting_count", "ожидает"}, {"done_count", "готово"}
@@ -160,7 +160,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Abrir carpeta"}, {"logs", "Abrir carpeta de registros"}, {"retry", "Reintentar"}, {"cancel", "Cancelar"}, {"remove", "Quitar vídeo"},
             {"invalid", "Usa enlaces de vídeo o listas de YouTube válidos, hasta 100 por lote."},
             {"folder_invalid", "Elige una carpeta existente."}, {"duplicate", "Estos vídeos ya están en la lista."},
-            {"added", "Descargas iniciadas"}, {"preview", "Cargando vista previa…"},
+            {"added", "Descargas iniciadas"}, {"preview", "Cargando vista previa…"}, {"playlist_loading", "Cargando lista de reproducción…"},
             {"browse", "Explorar"}, {"choose_folder", "Elegir carpeta"},
             {"up", "Arriba"}, {"use", "Usar esta carpeta"},
             {"active_count", "descargando"}, {"waiting_count", "en espera"}, {"done_count", "terminadas"}
@@ -180,7 +180,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Abrir pasta"}, {"logs", "Abrir pasta de registros"}, {"retry", "Tentar novamente"}, {"cancel", "Cancelar"}, {"remove", "Remover vídeo"},
             {"invalid", "Use links válidos de vídeos ou listas do YouTube, até 100 por lote."},
             {"folder_invalid", "Escolha uma pasta existente."}, {"duplicate", "Esses vídeos já estão na lista."},
-            {"added", "Downloads iniciados"}, {"preview", "Carregando prévia…"},
+            {"added", "Downloads iniciados"}, {"preview", "Carregando prévia…"}, {"playlist_loading", "Carregando playlist…"},
             {"browse", "Procurar"}, {"choose_folder", "Escolher pasta"},
             {"up", "Acima"}, {"use", "Usar esta pasta"},
             {"active_count", "baixando"}, {"waiting_count", "aguardando"}, {"done_count", "concluídos"}
@@ -200,7 +200,7 @@ inline const Messages& messages(const std::string& locale) {
             {"open", "Abrir pasta"}, {"logs", "Abrir pasta de registos"}, {"retry", "Tentar novamente"}, {"cancel", "Cancelar"}, {"remove", "Remover vídeo"},
             {"invalid", "Use ligações válidas de vídeos ou listas do YouTube, até 100 por lote."},
             {"folder_invalid", "Escolha uma pasta existente."}, {"duplicate", "Estes vídeos já estão na lista."},
-            {"added", "Transferências iniciadas"}, {"preview", "A carregar pré-visualização…"},
+            {"added", "Transferências iniciadas"}, {"preview", "A carregar pré-visualização…"}, {"playlist_loading", "A carregar a playlist…"},
             {"browse", "Procurar"}, {"choose_folder", "Escolher pasta"},
             {"up", "Acima"}, {"use", "Utilizar esta pasta"},
             {"active_count", "a transferir"}, {"waiting_count", "em espera"}, {"done_count", "concluídas"}
