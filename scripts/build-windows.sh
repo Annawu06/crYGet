@@ -2,19 +2,23 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="$project_dir/build-windows"
+build_dir="${CRYGET_WINDOWS_BUILD_DIR:-$project_dir/build-windows}"
 runtime_dir="$build_dir/runtime"
 if [[ -z "${NODE_ROOT:-}" || ( ! -f "${NODE_ROOT}/include/node.h" && ! -f "${NODE_ROOT}/include/node/node.h" ) || ! -d "${NODE_ROOT}/bin" ]]; then
     echo "Set NODE_ROOT to a Node/V8 embedding SDK with include/, lib/, and bin/ directories for this compiler." >&2
     exit 1
 fi
 
+makensis_tool="${NSIS_MAKENSIS:-makensis}"
+if [[ -n "${MSYSTEM:-}" && -n "${NSIS_MAKENSIS:-}" ]]; then
+    makensis_tool="$(cygpath -u "$NSIS_MAKENSIS")"
+fi
 if [[ -n "${MSYSTEM:-}" ]]; then
-    build_tools=(cmake ninja makensis gcc g++ windres objdump)
+    build_tools=(cmake ninja "$makensis_tool" gcc g++ windres objdump)
     objdump_tool=objdump
     toolchain=()
 else
-    build_tools=(cmake ninja makensis x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-windres x86_64-w64-mingw32-objdump)
+    build_tools=(cmake ninja "$makensis_tool" x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-windres x86_64-w64-mingw32-objdump)
     objdump_tool=x86_64-w64-mingw32-objdump
     toolchain=("-DCMAKE_TOOLCHAIN_FILE=$project_dir/cmake/mingw-x64.cmake")
 fi
@@ -35,6 +39,7 @@ cmake --build "$build_dir" --target cryget-desktop
 echo "Windows DLL imports:"
 imports="$("$objdump_tool" -p "$build_dir/cryget-desktop.exe" | grep 'DLL Name:' || true)"
 echo "$imports"
+rm -rf "$runtime_dir"
 mkdir -p "$runtime_dir"
 pending=("$build_dir/cryget-desktop.exe")
 declare -A visited=()
@@ -63,6 +68,8 @@ done
 for runtime_data in "$NODE_ROOT/icudtl.dat" "$NODE_ROOT/bin/icudtl.dat"; do
     if [[ -f "$runtime_data" ]]; then cp "$runtime_data" "$runtime_dir/icudtl.dat"; break; fi
 done
+icu_data_define=()
+if [[ -f "$runtime_dir/icudtl.dat" ]]; then icu_data_define=("-DHAS_ICU_DATA=1"); fi
 license_dir="$build_dir/licenses"
 mkdir -p "$license_dir"
 cp "$project_dir/third_party/acorn/LICENSE" "$license_dir/acorn.txt"
@@ -92,12 +99,20 @@ while IFS= read -r -d '' notice; do
     cp "$notice" "$license_dir/$package.txt"
 done < <(find "$project_dir/third_party" -mindepth 2 -maxdepth 2 -name copyright -print0)
 
-makensis -V2 \
-    "-DAPP_EXE=$build_dir/cryget-desktop.exe" \
-    "-DSETUP_EXE=$build_dir/crYGet-Setup.exe" \
-    "-DAPP_ICON=$project_dir/assets/cryget.ico" \
-    "-DLICENSE_DIR=$license_dir" \
-    "-DRUNTIME_DIR=$runtime_dir" \
-    "$project_dir/scripts/windows-installer.nsi"
+nsis_path() {
+    if [[ -n "${MSYSTEM:-}" ]]; then
+        cygpath -w "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+"$makensis_tool" -V2 \
+    "${icu_data_define[@]}" \
+    "-DAPP_EXE=$(nsis_path "$build_dir/cryget-desktop.exe")" \
+    "-DSETUP_EXE=$(nsis_path "$build_dir/crYGet-Setup.exe")" \
+    "-DAPP_ICON=$(nsis_path "$project_dir/assets/cryget.ico")" \
+    "-DLICENSE_DIR=$(nsis_path "$license_dir")" \
+    "-DRUNTIME_DIR=$(nsis_path "$runtime_dir")" \
+    "$(nsis_path "$project_dir/scripts/windows-installer.nsi")"
 echo "Built: $build_dir/cryget-desktop.exe"
 echo "Installer: $build_dir/crYGet-Setup.exe"

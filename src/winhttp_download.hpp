@@ -21,6 +21,9 @@ HttpResult winhttp_get_range(const std::string& url, uint64_t first, uint64_t la
                             const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes);
 HttpResult winhttp_post_json(const std::string& url, const std::string& body,
                             const std::atomic<bool>* canceled,
-                            const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes);
+                            const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes,
+                            const std::string& user_agent = {},
+                            const std::string& client_number = {},
+                            const std::string& client_version = {});
 } // namespace cryget
 #endif

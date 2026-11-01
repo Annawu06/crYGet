@@ -14,7 +14,18 @@
   !error "RUNTIME_DIR must point to the application runtime dependency directory"
 !endif
 
+; Use the standard 32-bit Unicode setup launcher for the 64-bit application.
+; This also avoids depending on the MSYS2-built amd64 installer stub.
+Target x86-unicode
 Unicode true
+!include "MUI2.nsh"
+!include "x64.nsh"
+!define MUI_ICON "${APP_ICON}"
+!define MUI_UNICON "${APP_ICON}"
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\cryget-desktop.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Open crYGet"
+!define MUI_FINISHPAGE_RUN_WORKINGDIR "$INSTDIR"
 Name "crYGet"
 OutFile "${SETUP_EXE}"
 Icon "${APP_ICON}"
@@ -24,19 +35,40 @@ InstallDirRegKey HKCU "Software\crYGet" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
-Page directory
-Page instfiles
-UninstPage uninstConfirm
-UninstPage instfiles
+CRCCheck force
+ShowInstDetails show
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+
+Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "crYGet requires 64-bit Windows."
+    Abort
+  ${EndIf}
+  SetRegView 64
+  SetShellVarContext current
+FunctionEnd
+
+Function un.onInit
+  SetRegView 64
+  SetShellVarContext current
+FunctionEnd
 
 Section "Install"
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   File /oname=cryget-desktop.exe "${APP_EXE}"
-  File "${RUNTIME_DIR}/*.dll"
-  File /nonfatal "${RUNTIME_DIR}/icudtl.dat"
+  File "${RUNTIME_DIR}\*.dll"
+  !ifdef HAS_ICU_DATA
+    File "${RUNTIME_DIR}\icudtl.dat"
+  !endif
   SetOutPath "$INSTDIR\licenses"
-  File /r "${LICENSE_DIR}/*"
+  File /r "${LICENSE_DIR}\*"
 
   Delete "$SMPROGRAMS\crYGet\crYGet.lnk"
   Delete "$SMPROGRAMS\crYGet\Uninstall crYGet.lnk"

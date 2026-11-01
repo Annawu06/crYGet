@@ -1,4 +1,4 @@
-FROM debian:trixie
+FROM debian:forky
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,6 +15,6 @@ COPY third_party/ ./third_party/
 COPY assets/ ./assets/
 COPY screenshots/linux-download-queue.png screenshots/linux-language-menu.png ./screenshots/
 COPY scripts/build-linux.sh scripts/cryget.desktop scripts/cryget.metainfo.xml ./scripts/
-ARG CRYGET_VERSION=2026.10.08
+ARG CRYGET_VERSION=2026.10.08.9+debian.forky
 ENV CRYGET_VERSION=$CRYGET_VERSION
 RUN bash scripts/build-linux.sh

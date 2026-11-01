@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
+#include "diagnostics.hpp"
 #include "winhttp_download.hpp"
 #include <array>
 #include <chrono>
@@ -36,11 +37,22 @@ void check_cancel(const std::atomic<bool>* canceled) {
 [[noreturn]] void fail(const char* stage) {
     throw std::runtime_error(std::string(stage) + " (Windows error " + std::to_string(GetLastError()) + ")");
 }
+
+[[noreturn]] void fail_for_host(const char* stage, const std::wstring& host) {
+    const auto code = GetLastError();
+    const std::string name(host.begin(), host.end());
+    log_event("http.failure", name + " stage=" + stage + " code=" + std::to_string(code));
+    throw std::runtime_error(std::string(stage) + " to " + name +
+                             " (Windows error " + std::to_string(code) + ")");
+}
 } // namespace
 
 HttpResult winhttp_request(const std::string& url, const std::string* body, bool range,
                            uint64_t range_first, uint64_t range_last, const std::atomic<bool>* canceled,
-                           const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes) {
+                           const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes,
+                           const std::string& user_agent = {},
+                           const std::string& client_number = {},
+                           const std::string& client_version = {}, int request_retry = 0) {
     check_cancel(canceled);
     if (url.rfind("https://", 0) != 0) throw std::runtime_error("The media address is missing or is not HTTPS");
     const auto address = wide(url);
@@ -53,7 +65,10 @@ HttpResult winhttp_request(const std::string& url, const std::string* body, bool
     std::wstring path = parts.dwUrlPathLength ? std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength) : L"/";
     if (parts.dwExtraInfoLength) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
 
-    HttpHandle session(WinHttpOpen(L"crYGet/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    const auto agent = user_agent.empty() ?
+        std::wstring(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36") :
+        wide(user_agent);
+    HttpHandle session(WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session.value) fail("Cannot initialize Windows HTTP");
     if (!WinHttpSetTimeouts(session.value, 10000, 10000, 10000, 30000)) fail("Cannot set HTTP timeouts");
@@ -61,24 +76,51 @@ HttpResult winhttp_request(const std::string& url, const std::string* body, bool
     if (!WinHttpSetOption(session.value, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, &redirects, sizeof(redirects)))
         fail("Cannot limit HTTP redirects");
     HttpHandle connection(WinHttpConnect(session.value, host.c_str(), parts.nPort, 0));
-    if (!connection.value) fail("Cannot connect to media server");
+    if (!connection.value) fail_for_host("Cannot connect", host);
     HttpHandle request(WinHttpOpenRequest(connection.value, body ? L"POST" : L"GET", path.c_str(), nullptr,
-                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
+                                           L"https://www.youtube.com/", WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE));
     if (!request.value) fail("Cannot create HTTP request");
-    std::wstring headers = body ? L"Accept-Encoding: identity\r\nContent-Type: application/json\r\n" :
-                                  L"Accept-Encoding: identity\r\n";
+    std::wstring headers = body ? L"Accept: */*\r\nAccept-Encoding: identity\r\nOrigin: https://www.youtube.com\r\nContent-Type: application/json\r\n" :
+                                  L"Accept: */*\r\nAccept-Encoding: identity\r\n";
+    if (!client_number.empty()) headers += L"X-YouTube-Client-Name: " + wide(client_number) + L"\r\n";
+    if (!client_version.empty()) headers += L"X-YouTube-Client-Version: " + wide(client_version) + L"\r\n";
     if (range) headers += L"Range: bytes=" + std::to_wstring(range_first) + L"-" +
                           std::to_wstring(range_last) + L"\r\n";
     if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1),
                             body ? const_cast<char*>(body->data()) : WINHTTP_NO_REQUEST_DATA,
                             body ? static_cast<DWORD>(body->size()) : 0,
-                            body ? static_cast<DWORD>(body->size()) : 0, 0)) fail("Cannot send HTTP request");
+                            body ? static_cast<DWORD>(body->size()) : 0, 0)) {
+        const DWORD code = GetLastError();
+        if ((code == ERROR_WINHTTP_NAME_NOT_RESOLVED || code == ERROR_WINHTTP_TIMEOUT) && request_retry < 2) {
+            log_event("http.retry", std::string(host.begin(), host.end()) +
+                      " code=" + std::to_string(code) + " attempt=" + std::to_string(request_retry + 1));
+            for (int step = 0; step < 5 * (request_retry + 1); ++step) { check_cancel(canceled); Sleep(100); }
+            return winhttp_request(url, body, range, range_first, range_last, canceled, on_bytes,
+                                   user_agent, client_number, client_version, request_retry + 1);
+        }
+        SetLastError(code);
+        fail_for_host("Cannot send HTTP request", host);
+    }
     check_cancel(canceled);
-    if (!WinHttpReceiveResponse(request.value, nullptr)) fail("Cannot receive HTTP response");
+    if (!WinHttpReceiveResponse(request.value, nullptr)) {
+        const DWORD code = GetLastError();
+        if ((code == ERROR_WINHTTP_NAME_NOT_RESOLVED || code == ERROR_WINHTTP_TIMEOUT) && request_retry < 2) {
+            log_event("http.retry", std::string(host.begin(), host.end()) +
+                      " code=" + std::to_string(code) + " attempt=" + std::to_string(request_retry + 1));
+            for (int step = 0; step < 5 * (request_retry + 1); ++step) { check_cancel(canceled); Sleep(100); }
+            return winhttp_request(url, body, range, range_first, range_last, canceled, on_bytes,
+                                   user_agent, client_number, client_version, request_retry + 1);
+        }
+        SetLastError(code);
+        fail_for_host("Cannot receive HTTP response", host);
+    }
     DWORD status = 0, status_size = sizeof(status);
     if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                              WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX))
         fail("Cannot read HTTP status");
+    log_event("http.response", std::string(body ? "POST " : "GET ") +
+              std::string(host.begin(), host.end()) + " status=" + std::to_string(status) +
+              (range ? " range=" + std::to_string(range_first) + "-" + std::to_string(range_last) : ""));
     if (status != 200 && !(range && status == 206))
         throw std::runtime_error("HTTP server returned " + std::to_string(status));
     if (range && status == 200 && range_first != 0)
@@ -121,10 +163,15 @@ HttpResult winhttp_request(const std::string& url, const std::string* body, bool
         check_cancel(canceled);
         DWORD count = 0;
         if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &count))
-            fail("Cannot read HTTP response");
+            fail_for_host("Cannot read HTTP response", host);
         if (!count) break;
         result.received += count;
-        on_bytes(buffer.data(), count, result.received, result.content_length);
+        if (result.received == count && range)
+            log_event("http.body.first", std::string(host.begin(), host.end()) +
+                      " range=" + std::to_string(range_first) + " bytes=" + std::to_string(count) +
+                      " total=" + std::to_string(result.total_length));
+        on_bytes(buffer.data(), count, result.received,
+                 range && status == 206 ? result.total_length : result.content_length);
         const auto now = std::chrono::steady_clock::now();
         if (now - speed_start >= std::chrono::seconds(30)) {
             if (result.received - speed_bytes < 30 * 1024) throw std::runtime_error("HTTP transfer is too slow");
@@ -133,8 +180,11 @@ HttpResult winhttp_request(const std::string& url, const std::string* body, bool
         }
     }
     check_cancel(canceled);
-    if (range && status == 206 && result.received != result.content_length)
-        throw std::runtime_error("Incomplete media byte range");
+    if (result.content_length && result.received != result.content_length)
+        throw std::runtime_error(range ? "Incomplete media byte range" : "Incomplete HTTP response");
+    if (range) log_event("http.body.complete", std::string(host.begin(), host.end()) +
+                         " range=" + std::to_string(range_first) + " bytes=" +
+                         std::to_string(result.received));
     return result;
 }
 
@@ -150,8 +200,11 @@ HttpResult winhttp_get_range(const std::string& url, uint64_t first, uint64_t la
 
 HttpResult winhttp_post_json(const std::string& url, const std::string& body,
                             const std::atomic<bool>* canceled,
-                            const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes) {
-    return winhttp_request(url, &body, false, 0, 0, canceled, on_bytes);
+    const std::function<void(const char*, size_t, uint64_t, uint64_t)>& on_bytes,
+    const std::string& user_agent, const std::string& client_number,
+    const std::string& client_version) {
+    return winhttp_request(url, &body, false, 0, 0, canceled, on_bytes,
+                           user_agent, client_number, client_version);
 }
 } // namespace cryget
 #endif

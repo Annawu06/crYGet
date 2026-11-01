@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <shellapi.h>
 #include <wincodec.h>
 #include <algorithm>
@@ -24,12 +25,15 @@
 #include "url_utils.hpp"
 #include "video_core.hpp"
 #include "video_links.hpp"
+#include "queue_priority.hpp"
 #include "winhttp_download.hpp"
 
 namespace {
 constexpr UINT changed_message = WM_APP + 1;
 constexpr UINT progress_message = WM_APP + 2;
-enum Control { Links = 101, Folder, Browse, Quality, Download, List, Remove, Retry, Open, Up, Down, Language, Logs };
+constexpr UINT playlist_message = WM_APP + 3;
+enum Control { Links = 101, Folder, Browse, Quality, Download, List, Remove, Retry, Open, Up, Down, Language, Logs, Paste };
+bool ui_self_test = false;
 
 constexpr COLORREF canvas = RGB(245, 247, 251);
 constexpr COLORREF ink = RGB(31, 41, 57);
@@ -193,6 +197,7 @@ struct Task {
     std::filesystem::path folder;
     std::string error, saved_path;
     std::atomic<bool> stop{false};
+    bool requeue = false;
     int state = 0; // 0 waiting, 1 connecting, 2 downloading, 3 complete, 4 failed, 5 stopping
     double percent = 0;
     uint64_t received = 0, total = 0, saved_size = 0;
@@ -203,6 +208,7 @@ struct Task {
     HBITMAP thumbnail = nullptr;
     int thumbnail_width = 0, thumbnail_height = 0;
     bool preview_done = false;
+    bool preview_thumbnail_only = false;
     ~Task() { if (thumbnail) DeleteObject(thumbnail); }
 };
 
@@ -210,12 +216,25 @@ struct App {
     HWND window = nullptr;
     HWND links = nullptr, folder = nullptr, browse = nullptr, quality = nullptr;
     HWND download = nullptr, list = nullptr, remove = nullptr, retry = nullptr, open = nullptr;
-    HWND up = nullptr, down = nullptr, language = nullptr, logs = nullptr, heading = nullptr, save_label = nullptr, empty = nullptr;
+    HWND up = nullptr, down = nullptr, language = nullptr, logs = nullptr, paste = nullptr;
+    HWND heading = nullptr, save_label = nullptr, empty = nullptr;
     std::vector<std::shared_ptr<Task>> tasks;
+    // The list box stores one row per task; keep its displayed order separately
+    // so status updates never have to reset the control or its selection.
+    std::vector<std::shared_ptr<Task>> displayed_tasks;
     std::vector<std::shared_ptr<Task>> active;
     std::deque<std::shared_ptr<Task>> preview_queue;
     std::vector<std::thread> preview_workers;
+    std::thread playlist_worker;
     std::mutex mutex;
+    std::mutex playlist_mutex;
+    std::vector<std::string> playlist_urls;
+    std::string playlist_error;
+    std::filesystem::path playlist_folder;
+    std::string playlist_quality;
+    bool playlist_ready = false;
+    bool playlist_loading = false;
+    std::atomic<bool> playlist_cancel{false};
     std::condition_variable stopped;
     std::condition_variable preview_ready;
     std::atomic<bool> closing{false};
@@ -223,6 +242,17 @@ struct App {
     size_t locale = 0;
     HFONT body_font = nullptr, small_font = nullptr, title_font = nullptr, button_font = nullptr, card_font = nullptr;
     HBRUSH white_brush = nullptr;
+    std::shared_ptr<Task> drag_source;
+    POINT drag_origin{};
+    bool dragging = false;
+    int drawn_rows = 0;
+    int buffered_paints = 0;
+    int list_rebuilds = 0;
+    bool painting_list_buffer = false;
+    int folder_open_requests = 0;
+    int browse_requests = 0;
+    std::filesystem::path last_opened_folder;
+    bool compact_layout = false;
 
     std::wstring trw(const char* key) const { return wide(tr(languages[locale].code, key)); }
 
@@ -248,7 +278,7 @@ struct App {
             int width = 0, height = 0;
             HBITMAP bitmap = task->stop ? nullptr : fetch_thumbnail(task->url, &task->stop, width, height);
             std::string title;
-            if (!task->stop && !closing) {
+            if (!task->stop && !closing && !task->preview_thumbnail_only) {
                 try {
                     const auto id = task->url.substr(task->url.find_last_of('=') + 1);
                     title = cryget::inspect_video(id, &task->stop).title;
@@ -275,11 +305,23 @@ struct App {
         for (int i = 0; i < 2; ++i) preview_workers.emplace_back([this] { preview_loop(); });
     }
 
+    // Caller holds mutex. Keep stopping workers counted until they exit.
     void schedule() {
-        while (!closing && active.size() < 2) {
-            auto found = std::find_if(tasks.begin(), tasks.end(), [](const auto& task) { return task->state == 0; });
-            if (found == tasks.end()) break;
-            auto task = *found;
+        const auto desired = cryget::priority_jobs(tasks, 2, [](const auto& task) {
+            return task->state == 0 || task->state == 1 || task->state == 2 || task->requeue;
+        });
+        if (ui_self_test) { notify(); return; }
+        for (const auto& task : active) {
+            if ((task->state == 1 || task->state == 2) &&
+                std::find(desired.begin(), desired.end(), task) == desired.end()) {
+                task->requeue = true;
+                task->state = 5;
+                task->stop = true;
+            }
+        }
+        for (const auto& task : desired) {
+            if (closing || active.size() >= 2) break;
+            if (task->state != 0) continue;
             task->state = 1;
             active.push_back(task);
             std::thread([this, task] { run(task); }).detach();
@@ -296,6 +338,7 @@ struct App {
             auto format = cryget::choose_format(*video, maximum);
             {
                 std::lock_guard lock(mutex);
+                if (task->stop) throw std::runtime_error("Download interrupted");
                 task->title = video->title;
                 task->video = video;
                 task->state = 2;
@@ -329,16 +372,30 @@ struct App {
                 task->saved_path = cryget::path_utf8(output);
                 task->saved_size = std::filesystem::file_size(output);
                 task->state = 3;
+                task->requeue = false;
             }
         } catch (const std::exception& error) {
             cryget::log_event("queue.error", task->url + " " + error.what());
             std::lock_guard lock(mutex);
-            task->error = error.what();
-            task->state = task->stop ? 5 : 4;
+            if (task->requeue && !closing && std::find(tasks.begin(), tasks.end(), task) != tasks.end()) {
+                task->state = 5;
+                task->error.clear();
+                task->percent = 0;
+                task->received = task->total = task->speed_sample_bytes = task->elapsed_seconds = 0;
+                task->speed = 0;
+            } else {
+                task->error = error.what();
+                task->state = task->stop ? 5 : 4;
+            }
         }
         {
             std::lock_guard lock(mutex);
             active.erase(std::remove(active.begin(), active.end(), task), active.end());
+            if (task->requeue && !closing && std::find(tasks.begin(), tasks.end(), task) != tasks.end()) {
+                task->requeue = false;
+                task->stop = false;
+                task->state = 0;
+            }
             schedule();
             stopped.notify_all();
         }
@@ -350,27 +407,68 @@ struct App {
         return index >= 0 && static_cast<size_t>(index) < tasks.size() ? tasks[index] : nullptr;
     }
 
-    void refresh() {
-        const int selection = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
-        SendMessageW(list, WM_SETREDRAW, FALSE, 0);
-        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+    void update_actions() {
+        const int index = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+        size_t count = 0;
+        int state = -1;
         {
             std::lock_guard lock(mutex);
-            for (const auto& task : tasks) {
-                const char* key = task->state == 0 ? "queued" : task->state == 1 ? "connecting" :
-                                  task->state == 2 ? "downloading" : task->state == 3 ? "complete" :
-                                  task->state == 4 ? "failed" : "canceling";
-                auto label = wide(task->title.empty() ? task->url : task->title);
-                label += L"  —  " + trw(key);
-                if (task->state == 2) label += L" " + std::to_wstring(static_cast<int>(task->percent)) + L"%";
-                if (task->state == 4) label += L": " + wide(task->error);
-                SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-            }
+            count = tasks.size();
+            if (index >= 0 && static_cast<size_t>(index) < count) state = tasks[index]->state;
         }
-        if (selection >= 0) SendMessageW(list, LB_SETCURSEL, selection, 0);
-        SendMessageW(list, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(list, nullptr, TRUE);
-        ShowWindow(empty, SendMessageW(list, LB_GETCOUNT, 0, 0) == 0 ? SW_SHOW : SW_HIDE);
+        const bool has_selection = state >= 0;
+        EnableWindow(remove, has_selection);
+        EnableWindow(retry, state == 4);
+        EnableWindow(open, has_selection);
+        EnableWindow(up, has_selection && index > 0);
+        EnableWindow(down, has_selection && static_cast<size_t>(index + 1) < count);
+    }
+
+    void refresh() {
+        const int selection = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
+        const int top_index = static_cast<int>(SendMessageW(list, LB_GETTOPINDEX, 0, 0));
+        const auto selected_task = selection >= 0 && static_cast<size_t>(selection) < displayed_tasks.size()
+            ? displayed_tasks[selection] : nullptr;
+        std::vector<std::shared_ptr<Task>> current_tasks;
+        {
+            std::lock_guard lock(mutex);
+            current_tasks = tasks;
+        }
+        if (current_tasks != displayed_tasks) {
+            ++list_rebuilds;
+            SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+            SendMessageW(list, LB_RESETCONTENT, 0, 0);
+            displayed_tasks = std::move(current_tasks);
+            for (size_t index = 0; index < displayed_tasks.size(); ++index)
+                SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L" "));
+            int next_selection = -1;
+            if (selected_task) {
+                const auto found = std::find(displayed_tasks.begin(), displayed_tasks.end(), selected_task);
+                if (found != displayed_tasks.end()) next_selection = static_cast<int>(found - displayed_tasks.begin());
+            }
+            if (next_selection < 0 && !displayed_tasks.empty())
+                next_selection = std::min(selection < 0 ? 0 : selection, static_cast<int>(displayed_tasks.size()) - 1);
+            if (next_selection >= 0) SendMessageW(list, LB_SETCURSEL, next_selection, 0);
+            if (top_index > 0) SendMessageW(list, LB_SETTOPINDEX, top_index, 0);
+            SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+            ShowWindow(empty, displayed_tasks.empty() ? SW_SHOW : SW_HIDE);
+        }
+        InvalidateRect(list, nullptr, FALSE);
+        update_actions();
+    }
+
+    void invalidate_active_rows() {
+        std::vector<int> indexes;
+        {
+            std::lock_guard lock(mutex);
+            for (size_t index = 0; index < tasks.size(); ++index)
+                if (tasks[index]->state == 2) indexes.push_back(static_cast<int>(index));
+        }
+        for (const int index : indexes) {
+            RECT row{};
+            if (SendMessageW(list, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&row)) != LB_ERR)
+                InvalidateRect(list, &row, FALSE);
+        }
     }
 
     void translate() {
@@ -384,7 +482,8 @@ struct App {
         SetWindowTextW(save_label, trw("save").c_str());
         SetWindowTextW(empty, trw("empty").c_str());
         SetWindowTextW(browse, trw("browse").c_str());
-        SetWindowTextW(download, trw("add").c_str());
+        SetWindowTextW(paste, trw("paste").c_str());
+        SetWindowTextW(download, playlist_loading ? trw("playlist_loading").c_str() : trw("add").c_str());
         SetWindowTextW(remove, trw("remove").c_str());
         SetWindowTextW(retry, trw("retry").c_str());
         SetWindowTextW(open, trw("open").c_str());
@@ -398,6 +497,8 @@ struct App {
     }
 
     void add() {
+        cryget::log_event("queue.add.click", playlist_loading ? "playlist loading" : "received");
+        if (playlist_loading) return;
         std::filesystem::path target;
         try { target = cryget::checked_folder(utf8(control_text(folder))); }
         catch (const std::exception& error) {
@@ -406,6 +507,35 @@ struct App {
         }
         const auto input = utf8(control_text(links));
         const bool has_playlist = cryget::contains_youtube_playlist(input);
+        const int quality_index = static_cast<int>(SendMessageW(quality, CB_GETCURSEL, 0, 0));
+        const std::string quality_value = quality_index == 1 ? "1080p" : quality_index == 2 ? "720p" : "Best";
+        if (has_playlist) {
+            playlist_loading = true;
+            playlist_cancel = false;
+            playlist_folder = std::move(target);
+            playlist_quality = quality_value;
+            SetWindowTextW(download, trw("playlist_loading").c_str());
+            EnableWindow(download, FALSE);
+            EnableWindow(links, FALSE);
+            EnableWindow(paste, FALSE);
+            InvalidateRect(window, nullptr, TRUE);
+            if (playlist_worker.joinable()) playlist_worker.join();
+            const HWND notify_window = window;
+            playlist_worker = std::thread([this, input, notify_window] {
+                std::vector<std::string> urls;
+                std::string error;
+                try { urls = cryget::expand_video_links(input, &playlist_cancel); }
+                catch (const std::exception& exception) { error = exception.what(); }
+                {
+                    std::lock_guard lock(playlist_mutex);
+                    playlist_urls = std::move(urls);
+                    playlist_error = std::move(error);
+                    playlist_ready = true;
+                }
+                if (!closing) PostMessageW(notify_window, playlist_message, 0, 0);
+            });
+            return;
+        }
         std::vector<std::string> urls;
         try { urls = cryget::expand_video_links(input); }
         catch (const std::exception& error) {
@@ -417,36 +547,125 @@ struct App {
             MessageBoxW(window, trw("invalid").c_str(), L"crYGet", MB_ICONERROR);
             return;
         }
-        const int quality_index = static_cast<int>(SendMessageW(quality, CB_GETCURSEL, 0, 0));
-        const std::string quality_value = quality_index == 1 ? "1080p" : quality_index == 2 ? "720p" : "Best";
+        add_urls(urls, std::move(target), quality_value, false);
+    }
+
+    void add_urls(const std::vector<std::string>& urls, std::filesystem::path target,
+                  const std::string& quality_value, bool has_playlist) {
+        if (urls.empty()) {
+            MessageBoxW(window, trw("invalid").c_str(), L"crYGet", MB_ICONERROR);
+            return;
+        }
+        size_t added = 0;
+        int existing_index = -1;
+        int first_added_index = -1;
         {
             std::lock_guard lock(mutex);
             for (const auto& url : urls) {
-                if (std::any_of(tasks.begin(), tasks.end(), [&](const auto& task) { return task->url == url; })) continue;
+                // A failed download can be submitted again with a new folder or
+                // quality, just as it can on Linux. Keep the failed card for context.
+                const auto existing = std::find_if(tasks.begin(), tasks.end(),
+                    [&](const auto& task) { return task->url == url && task->state != 4; });
+                if (existing != tasks.end()) {
+                    if (existing_index < 0) existing_index = static_cast<int>(existing - tasks.begin());
+                    continue;
+                }
                 auto task = std::make_shared<Task>();
                 task->url = url; task->folder = target; task->quality = quality_value;
-                if (has_playlist) task->preview_done = true;
+                task->preview_thumbnail_only = has_playlist;
+                if (first_added_index < 0) first_added_index = static_cast<int>(tasks.size());
                 tasks.push_back(task);
-                if (!has_playlist) preview_queue.push_back(task);
+                preview_queue.push_back(task);
+                ++added;
             }
-            preview_ready.notify_all();
-            schedule();
+            if (added) {
+                preview_ready.notify_all();
+                schedule();
+            }
+        }
+        cryget::log_event("queue.add.result", "requested=" + std::to_string(urls.size()) +
+                          " added=" + std::to_string(added));
+        if (!added) {
+            refresh();
+            if (existing_index >= 0) {
+                SendMessageW(list, LB_SETCURSEL, existing_index, 0);
+                SendMessageW(list, LB_SETTOPINDEX, existing_index, 0);
+                SetFocus(list);
+            }
+            if (!ui_self_test) MessageBoxW(window, trw("duplicate").c_str(), L"crYGet", MB_ICONINFORMATION);
+            return;
         }
         SetWindowTextW(links, L"");
         refresh();
+        if (first_added_index >= 0) {
+            SendMessageW(list, LB_SETCURSEL, first_added_index, 0);
+            SendMessageW(list, LB_SETTOPINDEX, first_added_index, 0);
+            update_actions();
+        }
+        RECT viewport{};
+        GetClientRect(list, &viewport);
+        cryget::log_event("queue.ui", "items=" + std::to_string(SendMessageW(list, LB_GETCOUNT, 0, 0)) +
+                          " viewport_height=" + std::to_string(viewport.bottom) +
+                          " row_height=" + std::to_string(SendMessageW(list, LB_GETITEMHEIGHT, 0, 0)));
+    }
+
+    void finish_playlist() {
+        if (playlist_worker.joinable()) playlist_worker.join();
+        std::vector<std::string> urls;
+        std::string error;
+        {
+            std::lock_guard lock(playlist_mutex);
+            if (!playlist_ready) return;
+            urls = std::move(playlist_urls);
+            error = std::move(playlist_error);
+            playlist_ready = false;
+        }
+        playlist_loading = false;
+        EnableWindow(download, TRUE);
+        EnableWindow(links, TRUE);
+        EnableWindow(paste, TRUE);
+        SetWindowTextW(download, trw("add").c_str());
+        if (!error.empty()) {
+            cryget::log_event("playlist.expand_error", error);
+            MessageBoxW(window, wide(error).c_str(), L"crYGet", MB_ICONERROR);
+        } else add_urls(urls, std::move(playlist_folder), playlist_quality, true);
+        InvalidateRect(window, nullptr, TRUE);
+    }
+
+    void paste_links() {
+        if (!OpenClipboard(window)) return;
+        HANDLE contents = GetClipboardData(CF_UNICODETEXT);
+        if (contents) {
+            const auto* text = static_cast<const wchar_t*>(GlobalLock(contents));
+            if (text) {
+                SendMessageW(links, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(text));
+                GlobalUnlock(contents);
+                SetFocus(links);
+            }
+        }
+        CloseClipboard();
     }
 
     void erase() {
+        const int selected_index = static_cast<int>(SendMessageW(list, LB_GETCURSEL, 0, 0));
         auto task = selected();
         if (!task) return;
+        size_t remaining = 0;
         {
             std::lock_guard lock(mutex);
             task->stop = true;
+            task->requeue = false;
             tasks.erase(std::remove(tasks.begin(), tasks.end(), task), tasks.end());
+            remaining = tasks.size();
             cryget::log_event("queue.remove", task->url);
             schedule();
         }
         refresh();
+        if (remaining) {
+            const int next = std::min(selected_index, static_cast<int>(remaining) - 1);
+            SendMessageW(list, LB_SETCURSEL, next, 0);
+        }
+        update_actions();
     }
 
     void retry_selected() {
@@ -471,6 +690,7 @@ struct App {
         const auto next = index + direction;
         if (next < 0 || next >= static_cast<ptrdiff_t>(tasks.size())) return;
         std::swap(tasks[index], tasks[next]);
+        schedule();
         refresh_without_lock(next);
     }
 
@@ -482,36 +702,99 @@ struct App {
     void open_folder() {
         auto task = selected();
         if (!task) return;
-        ShellExecuteW(window, L"open", task->folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        launch_folder(task->folder);
+    }
+
+    void launch_folder(const std::filesystem::path& target) {
+        if (ui_self_test) {
+            ++folder_open_requests;
+            last_opened_folder = target;
+            return;
+        }
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", target.c_str(),
+                                                      nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+            cryget::log_event("folder.open_error", cryget::path_utf8(target));
+            MessageBoxW(window, target.c_str(), L"Could not open folder", MB_OK | MB_ICONERROR);
+        }
     }
 
     void browse_folder() {
-        BROWSEINFOW info{};
-        info.hwndOwner = window;
-        const auto title = trw("choose_folder");
-        info.lpszTitle = title.c_str();
-        info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-        auto* chosen = SHBrowseForFolderW(&info);
-        if (!chosen) return;
-        wchar_t path[MAX_PATH]{};
-        if (SHGetPathFromIDListW(chosen, path)) SetWindowTextW(folder, path);
-        CoTaskMemFree(chosen);
+        if (ui_self_test) {
+            ++browse_requests;
+            return;
+        }
+        IFileOpenDialog* dialog = nullptr;
+        HRESULT result = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(&dialog));
+        if (SUCCEEDED(result)) {
+            DWORD options = 0;
+            result = dialog->GetOptions(&options);
+            if (SUCCEEDED(result)) result = dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+            if (SUCCEEDED(result)) result = dialog->SetTitle(trw("choose_folder").c_str());
+            const auto current = control_text(folder);
+            if (SUCCEEDED(result) && !current.empty()) {
+                IShellItem* initial = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(current.c_str(), nullptr, IID_PPV_ARGS(&initial)))) {
+                    dialog->SetFolder(initial);
+                    initial->Release();
+                }
+            }
+            if (SUCCEEDED(result)) result = dialog->Show(window);
+            if (SUCCEEDED(result)) {
+                IShellItem* chosen = nullptr;
+                result = dialog->GetResult(&chosen);
+                if (SUCCEEDED(result)) {
+                    PWSTR path = nullptr;
+                    result = chosen->GetDisplayName(SIGDN_FILESYSPATH, &path);
+                    if (SUCCEEDED(result)) {
+                        SetWindowTextW(folder, path);
+                        CoTaskMemFree(path);
+                    }
+                    chosen->Release();
+                }
+            }
+            dialog->Release();
+        }
+        if (FAILED(result) && result != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+            cryget::log_event("folder.browse_error", "HRESULT=" + std::to_string(result));
+            MessageBoxW(window, trw("folder_invalid").c_str(), L"crYGet", MB_OK | MB_ICONERROR);
+        }
     }
 
     void resize(int width, int height) {
         const int margin = 28, gap = 12;
         const int content = width - 2 * margin;
+        compact_layout = height < 760;
+        const bool narrow = width < 900;
         MoveWindow(language, width - 226, 32, 188, 240, TRUE);
-        MoveWindow(heading, 60, 150, content - 64, 24, TRUE);
-        MoveWindow(links, 60, 179, content - 64, 76, TRUE);
-        MoveWindow(save_label, 260, 267, content - 264, 22, TRUE);
-        MoveWindow(quality, 60, 292, 180, 240, TRUE);
-        MoveWindow(folder, 260, 292, width - 624, 38, TRUE);
-        MoveWindow(browse, width - 352, 292, 102, 38, TRUE);
-        MoveWindow(download, width - 232, 289, 172, 44, TRUE);
-        MoveWindow(list, 60, 425, content - 64, std::max(100, height - 515), TRUE);
-        MoveWindow(empty, 88, 450, content - 120, std::max(54, height - 568), TRUE);
-        const int bottom = height - 70;
+        MoveWindow(heading, 60, compact_layout ? 136 : 150, content - 224, 24, TRUE);
+        MoveWindow(paste, width - 204, compact_layout ? 132 : 146, 144, 30, TRUE);
+        MoveWindow(links, 60, compact_layout ? 162 : 179, content - 64,
+                   compact_layout ? 50 : 76, TRUE);
+        MoveWindow(save_label, 260, compact_layout ? 219 : 267, content - 264, 22, TRUE);
+        MoveWindow(quality, 60, compact_layout ? 245 : 292, 180, 240, TRUE);
+        MoveWindow(folder, 260, compact_layout ? 245 : 292, width - 624,
+                   compact_layout ? 34 : 38, TRUE);
+        MoveWindow(browse, width - 352, compact_layout ? 245 : 292, 102,
+                   compact_layout ? 34 : 38, TRUE);
+        MoveWindow(download, width - 232, compact_layout ? 242 : 289, 172,
+                   compact_layout ? 40 : 44, TRUE);
+        const int list_top = compact_layout ? 360 : 425;
+        const int action_top = height - (narrow ? 108 : compact_layout ? 60 : 70);
+        MoveWindow(list, 60, list_top, content - 64,
+                   std::max(80, action_top - list_top - 16), TRUE);
+        RECT list_client{};
+        GetClientRect(list, &list_client);
+        const int old_row_height = static_cast<int>(SendMessageW(list, LB_GETITEMHEIGHT, 0, 0));
+        const int top_index = static_cast<int>(SendMessageW(list, LB_GETTOPINDEX, 0, 0));
+        SendMessageW(list, LB_SETITEMHEIGHT, 0,
+                     std::min(264, std::max(90, static_cast<int>(list_client.bottom) - 2)));
+        if (old_row_height != SendMessageW(list, LB_GETITEMHEIGHT, 0, 0)) {
+            SendMessageW(list, LB_SETTOPINDEX, top_index, 0);
+            InvalidateRect(list, nullptr, TRUE);
+        }
+        MoveWindow(empty, 88, compact_layout ? 385 : 450, content - 120,
+                   std::max(54, action_top - (compact_layout ? 385 : 450) - 12), TRUE);
         HDC dc = GetDC(window);
         HGDIOBJ old_font = SelectObject(dc, button_font);
         int button_x = 60;
@@ -521,17 +804,18 @@ struct App {
             SIZE extent{};
             GetTextExtentPoint32W(dc, caption.c_str(), static_cast<int>(caption.size()), &extent);
             const int button_width = std::max(button.second, static_cast<int>(extent.cx) + 32);
-            MoveWindow(button.first, button_x, bottom, button_width, 38, TRUE);
+            MoveWindow(button.first, button_x, action_top, button_width, 38, TRUE);
             button_x += button_width + gap;
         }
         SelectObject(dc, old_font);
         ReleaseDC(window, dc);
-        MoveWindow(up, width - 150, bottom, 38, 38, TRUE);
-        MoveWindow(down, width - 100, bottom, 38, 38, TRUE);
+        MoveWindow(up, width - 150, narrow ? height - 54 : action_top, 38, 38, TRUE);
+        MoveWindow(down, width - 100, narrow ? height - 54 : action_top, 38, 38, TRUE);
         InvalidateRect(window, nullptr, TRUE);
     }
 
     void shutdown() {
+        playlist_cancel = true;
         std::unique_lock lock(mutex);
         closing = true;
         for (const auto& task : tasks) task->stop = true;
@@ -540,12 +824,144 @@ struct App {
         preview_ready.notify_all();
         stopped.wait(lock, [&] { return active.empty(); });
         lock.unlock();
+        if (playlist_worker.joinable()) playlist_worker.join();
         for (auto& worker : preview_workers) if (worker.joinable()) worker.join();
         window = nullptr;
     }
 };
 
 App* app = nullptr;
+WNDPROC original_list_proc = nullptr;
+
+LRESULT CALLBACK queue_list_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (!app) return CallWindowProcW(original_list_proc, window, message, wparam, lparam);
+    if (message == WM_ERASEBKGND) return 1;
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint{};
+        HDC target_dc = BeginPaint(window, &paint);
+        RECT client{};
+        GetClientRect(window, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        HDC buffer_dc = width > 0 && height > 0 ? CreateCompatibleDC(target_dc) : nullptr;
+        HBITMAP bitmap = buffer_dc ? CreateCompatibleBitmap(target_dc, width, height) : nullptr;
+        HGDIOBJ old_bitmap = bitmap ? SelectObject(buffer_dc, bitmap) : nullptr;
+        HDC draw_dc = bitmap ? buffer_dc : target_dc;
+        if (bitmap) ++app->buffered_paints;
+        fill(draw_dc, client, white);
+        const int count = static_cast<int>(SendMessageW(window, LB_GETCOUNT, 0, 0));
+        const int top = static_cast<int>(SendMessageW(window, LB_GETTOPINDEX, 0, 0));
+        const int selection = static_cast<int>(SendMessageW(window, LB_GETCURSEL, 0, 0));
+        app->painting_list_buffer = bitmap != nullptr;
+        for (int index = std::max(0, top); index < count; ++index) {
+            RECT row{};
+            if (SendMessageW(window, LB_GETITEMRECT, index, reinterpret_cast<LPARAM>(&row)) == LB_ERR) break;
+            if (row.top >= client.bottom) break;
+            if (row.bottom <= client.top) continue;
+            DRAWITEMSTRUCT item{};
+            item.CtlType = ODT_LISTBOX;
+            item.CtlID = List;
+            item.itemID = static_cast<UINT>(index);
+            item.itemAction = ODA_DRAWENTIRE;
+            if (index == selection) item.itemState |= ODS_SELECTED;
+            if (index == selection && GetFocus() == window) item.itemState |= ODS_FOCUS;
+            item.hwndItem = window;
+            item.hDC = draw_dc;
+            item.rcItem = row;
+            SendMessageW(app->window, WM_DRAWITEM, List, reinterpret_cast<LPARAM>(&item));
+        }
+        app->painting_list_buffer = false;
+        if (bitmap) {
+            BitBlt(target_dc, paint.rcPaint.left, paint.rcPaint.top,
+                   paint.rcPaint.right - paint.rcPaint.left,
+                   paint.rcPaint.bottom - paint.rcPaint.top,
+                   buffer_dc, paint.rcPaint.left, paint.rcPaint.top, SRCCOPY);
+            SelectObject(buffer_dc, old_bitmap);
+            DeleteObject(bitmap);
+        }
+        if (buffer_dc) DeleteDC(buffer_dc);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    if (message == WM_KEYDOWN && wparam == VK_DELETE) {
+        app->erase();
+        return 0;
+    }
+    const int x = static_cast<short>(LOWORD(lparam));
+    const int y = static_cast<short>(HIWORD(lparam));
+    if (message == WM_LBUTTONDOWN) {
+        const auto result = CallWindowProcW(original_list_proc, window, message, wparam, lparam);
+        const auto hit = static_cast<DWORD>(SendMessageW(window, LB_ITEMFROMPOINT, 0, lparam));
+        if (!HIWORD(hit)) {
+            std::lock_guard lock(app->mutex);
+            if (LOWORD(hit) < app->tasks.size()) {
+                app->drag_source = app->tasks[LOWORD(hit)];
+                app->drag_origin = {x, y};
+                app->dragging = false;
+                SetCapture(window);
+            }
+        }
+        return result;
+    }
+    if (message == WM_MOUSEMOVE && app->drag_source) {
+        if (!app->dragging && (std::abs(x - app->drag_origin.x) >= GetSystemMetrics(SM_CXDRAG) ||
+                              std::abs(y - app->drag_origin.y) >= GetSystemMetrics(SM_CYDRAG))) {
+            app->dragging = true;
+            SetTimer(window, 2, 100, nullptr);
+        }
+        if (app->dragging) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            const auto hit = static_cast<DWORD>(SendMessageW(window, LB_ITEMFROMPOINT, 0, lparam));
+            if (!HIWORD(hit)) SendMessageW(window, LB_SETCURSEL, LOWORD(hit), 0);
+        }
+        return 0;
+    }
+    if (message == WM_TIMER && wparam == 2 && app->dragging) {
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        ScreenToClient(window, &cursor);
+        RECT client{};
+        GetClientRect(window, &client);
+        const int direction = cursor.y < 28 ? -1 : cursor.y > client.bottom - 28 ? 1 : 0;
+        if (direction) {
+            const auto top = SendMessageW(window, LB_GETTOPINDEX, 0, 0);
+            SendMessageW(window, LB_SETTOPINDEX, std::max<LRESULT>(0, top + direction), 0);
+        }
+        return 0;
+    }
+    if (message == WM_LBUTTONUP && app->drag_source) {
+        auto source = app->drag_source;
+        const bool dragging = app->dragging;
+        app->drag_source.reset();
+        app->dragging = false;
+        KillTimer(window, 2);
+        ReleaseCapture();
+        const auto hit = static_cast<DWORD>(SendMessageW(window, LB_ITEMFROMPOINT, 0, lparam));
+        if (dragging && !HIWORD(hit)) {
+            RECT bounds{};
+            SendMessageW(window, LB_GETITEMRECT, LOWORD(hit), reinterpret_cast<LPARAM>(&bounds));
+            std::lock_guard lock(app->mutex);
+            auto from = std::find(app->tasks.begin(), app->tasks.end(), source);
+            if (from != app->tasks.end() && LOWORD(hit) < app->tasks.size()) {
+                auto target = app->tasks[LOWORD(hit)];
+                if (target != source) {
+                    app->tasks.erase(from);
+                    auto to = std::find(app->tasks.begin(), app->tasks.end(), target);
+                    app->tasks.insert(to + (y > (bounds.top + bounds.bottom) / 2 ? 1 : 0), source);
+                    app->schedule();
+                }
+                app->refresh_without_lock(std::find(app->tasks.begin(), app->tasks.end(), source) - app->tasks.begin());
+            }
+        }
+        return CallWindowProcW(original_list_proc, window, message, wparam, lparam);
+    }
+    if (message == WM_CAPTURECHANGED || message == WM_CANCELMODE) {
+        app->drag_source.reset();
+        app->dragging = false;
+        KillTimer(window, 2);
+    }
+    return CallWindowProcW(original_list_proc, window, message, wparam, lparam);
+}
 
 HWND control(HWND parent, const wchar_t* type, const wchar_t* label, DWORD style, int id) {
     HWND result = CreateWindowExW(0, type, label, WS_CHILD | WS_VISIBLE | style,
@@ -566,6 +982,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         app->card_font = make_font(19, FW_SEMIBOLD);
         app->white_brush = CreateSolidBrush(white);
         app->heading = control(window, L"STATIC", L"", 0, 0);
+        app->paste = control(window, L"BUTTON", L"", BS_OWNERDRAW, Paste);
         app->links = control(window, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL, Links);
         SendMessageW(app->links, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(12, 12));
         app->save_label = control(window, L"STATIC", L"", 0, 0);
@@ -581,7 +998,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SendMessageW(app->language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide(language.name).c_str()));
         SendMessageW(app->language, CB_SETCURSEL, 0, 0);
         app->download = control(window, L"BUTTON", L"", BS_OWNERDRAW, Download);
-        app->list = control(window, L"LISTBOX", L"", WS_VSCROLL | LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS, List);
+        app->list = control(window, L"LISTBOX", L"", WS_VSCROLL | LBS_NOTIFY | LBS_OWNERDRAWFIXED |
+                            LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT, List);
+        original_list_proc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(app->list, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(queue_list_proc)));
         app->empty = control(window, L"STATIC", L"", SS_CENTER | SS_CENTERIMAGE, 0);
         SendMessageW(app->empty, WM_SETFONT, reinterpret_cast<WPARAM>(app->small_font), TRUE);
         app->remove = control(window, L"BUTTON", L"", BS_OWNERDRAW, Remove);
@@ -596,7 +1016,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             SetWindowTextW(app->folder, std::filesystem::is_directory(downloads) ? downloads.c_str() : home);
         }
         app->translate();
-        app->start_previews();
+        if (!ui_self_test) app->start_previews();
         SetTimer(window, 1, 1000, nullptr);
         return 0;
     }
@@ -604,7 +1024,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     switch (message) {
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
-            info->ptMinTrackSize = {1040, 760};
+            info->ptMinTrackSize = {800, 660};
             return 0;
         }
         case WM_ERASEBKGND:
@@ -638,12 +1058,17 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             }
             label(dc, app->trw("subtitle"), RECT{111, 58, client.right - 254, 101}, muted, app->small_font,
                   DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
-            rounded(dc, RECT{28, 132, client.right - 28, 350}, white, 20);
-            rounded_outline(dc, RECT{28, 132, client.right - 28, 350}, line, 20);
-            label(dc, app->trw("quality"), RECT{60, 266, 240, 289}, muted, app->small_font);
-            rounded(dc, RECT{28, 370, client.right - 28, client.bottom - 16}, white, 20);
-            rounded_outline(dc, RECT{28, 370, client.right - 28, client.bottom - 16}, line, 20);
-            label(dc, app->trw("library"), RECT{60, 383, client.right - 60, 417}, ink, app->card_font);
+            const bool compact = app->compact_layout;
+            const RECT input_panel{28, compact ? 124 : 132, client.right - 28, compact ? 296 : 350};
+            rounded(dc, input_panel, white, 20);
+            rounded_outline(dc, input_panel, line, 20);
+            label(dc, app->trw("quality"), compact ? RECT{60, 218, 240, 241} :
+                  RECT{60, 266, 240, 289}, muted, app->small_font);
+            const RECT library_panel{28, compact ? 310 : 370, client.right - 28, client.bottom - 16};
+            rounded(dc, library_panel, white, 20);
+            rounded_outline(dc, library_panel, line, 20);
+            label(dc, app->trw("library"), compact ? RECT{60, 318, client.right - 60, 352} :
+                  RECT{60, 383, client.right - 60, 417}, ink, app->card_font);
             EndPaint(window, &ps);
             return 0;
         }
@@ -671,7 +1096,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             if (item->CtlType == ODT_BUTTON) {
                 const bool primary = item->CtlID == Download;
                 const bool pressed = (item->itemState & ODS_SELECTED) != 0;
-                const COLORREF background = primary ? (pressed ? RGB(38, 72, 151) : blue) :
+                const bool disabled = (item->itemState & ODS_DISABLED) != 0;
+                const COLORREF background = disabled ? neutral : primary ? (pressed ? RGB(38, 72, 151) : blue) :
                                             item->CtlID == Remove ? (pressed ? RGB(249, 218, 211) : peach) :
                                             item->CtlID == Browse ? (pressed ? RGB(211, 234, 221) : mint) :
                                             pressed ? lavender : neutral;
@@ -681,7 +1107,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 GetWindowTextW(item->hwndItem, name, 160);
                 RECT r = item->rcItem;
                 if (pressed) OffsetRect(&r, 0, 1);
-                label(item->hDC, name, r, primary ? white : ink, app->button_font,
+                label(item->hDC, name, r, disabled ? muted : primary ? white : ink, app->button_font,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 if (item->itemState & ODS_FOCUS) {
                     RECT focus = item->rcItem;
@@ -691,7 +1117,27 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                 return TRUE;
             }
             if (item->CtlID == List && item->itemID != static_cast<UINT>(-1)) {
+                ++app->drawn_rows;
                 RECT row = item->rcItem;
+                RECT viewport{}, visible{};
+                GetClientRect(app->list, &viewport);
+                if (!IntersectRect(&visible, &row, &viewport)) return TRUE;
+                // Paint the complete card offscreen, then present it in one copy.
+                // Progress updates otherwise expose the white erase between its shapes.
+                HDC target_dc = item->hDC;
+                HDC buffer_dc = app->painting_list_buffer ? nullptr : CreateCompatibleDC(target_dc);
+                HBITMAP buffer_bitmap = buffer_dc ? CreateCompatibleBitmap(target_dc,
+                    row.right - row.left, row.bottom - row.top) : nullptr;
+                HGDIOBJ old_bitmap = buffer_bitmap ? SelectObject(buffer_dc, buffer_bitmap) : nullptr;
+                DRAWITEMSTRUCT buffered_item = *item;
+                if (buffer_bitmap) {
+                    SetViewportOrgEx(buffer_dc, -row.left, -row.top, nullptr);
+                    buffered_item.hDC = buffer_dc;
+                    item = &buffered_item;
+                }
+                const int saved_clip = SaveDC(item->hDC);
+                IntersectClipRect(item->hDC, visible.left, visible.top, visible.right, visible.bottom);
+                const bool compact = row.bottom - row.top < 264;
                 const bool selected = (item->itemState & ODS_SELECTED) != 0;
                 fill(item->hDC, row, white);
                 const RECT card{row.left + 8, row.top + 7, row.right - 8, row.bottom - 7};
@@ -726,7 +1172,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     }
                 }
                 if (task) {
-                    const RECT preview{row.left + 16, row.top + 16, row.left + 336, row.top + 196};
+                    const int preview_height = compact ?
+                        std::min(180, std::max(1, static_cast<int>(row.bottom - row.top) - 28)) : 180;
+                    const int preview_width = compact ? preview_height * 16 / 9 : 320;
+                    const RECT preview{row.left + 16, row.top + 14, row.left + 16 + preview_width,
+                                       row.top + 14 + preview_height};
                     rounded(item->hDC, preview, pale_blue, 10);
                     rounded_outline(item->hDC, preview, line, 10);
                     if (thumbnail && thumbnail_width > 0 && thumbnail_height > 0) {
@@ -735,7 +1185,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                             HGDIOBJ old = SelectObject(source, thumbnail);
                             const int saved = SaveDC(item->hDC);
                             HRGN clip = CreateRoundRectRgn(preview.left, preview.top, preview.right + 1, preview.bottom + 1, 10, 10);
-                            SelectClipRgn(item->hDC, clip);
+                            ExtSelectClipRgn(item->hDC, clip, RGN_AND);
                             DeleteObject(clip);
                             const int target_width = preview.right - preview.left;
                             const int target_height = preview.bottom - preview.top;
@@ -757,20 +1207,25 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                         label(item->hDC, preview_done ? L"▶" : app->trw("preview"), preview, blue,
                               app->small_font, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                     }
+                    const int details_left = compact ? preview.right + 20 : row.left + 358;
                     const COLORREF state_color = state == 3 ? RGB(40, 112, 91) : state == 4 ? RGB(168, 63, 72) : blue;
                     label(item->hDC, wide(title.empty() ? url : title),
-                          RECT{row.left + 358, row.top + 30, row.right - 24, row.top + 115}, ink, app->card_font,
+                          RECT{details_left, row.top + (compact ? 14 : 30), row.right - 24,
+                               compact ? row.bottom - 52 : row.top + 115}, ink, app->card_font,
                           DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
                     const char* key = state == 0 ? "queued" : state == 1 ? "connecting" : state == 2 ? "downloading" :
                                       state == 3 ? "complete" : state == 4 ? "failed" : "canceling";
                     std::wstring status = app->trw(key);
-                    if (state == 2) status += L"  " + std::to_wstring(static_cast<int>(percent)) + L"%";
+                    if (state == 2) status += total ?
+                        L"  " + std::to_wstring(static_cast<int>(percent)) + L"%  ·  " + size_text(received) :
+                        L"  ·  " + size_text(received);
                     if (state == 4 && !error.empty()) status += L" · " + wide(error);
-                    const RECT status_box{row.left + 358, row.top + 133, row.right - 24, row.top + 172};
+                    const RECT status_box{details_left, compact ? row.bottom - 48 : row.top + 133,
+                                          row.right - 24, compact ? row.bottom - 12 : row.top + 172};
                     rounded(item->hDC, status_box, state == 3 ? mint : state == 4 ? peach : pale_blue, 8);
                     label(item->hDC, status, RECT{status_box.left + 12, status_box.top + 2,
                           status_box.right - 12, status_box.bottom - 2}, state_color, app->small_font);
-                    if (state == 2 || state == 3) {
+                    if (!compact && (state == 2 || state == 3)) {
                         const std::wstring amount = state == 3 ? size_text(saved_size) :
                             size_text(received) + L" / " + (total ? size_text(total) : L"—");
                         std::wstring first = app->trw("size") + L": " + amount;
@@ -787,7 +1242,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                               RECT{row.left + 358, row.top + 211, row.right - 24, row.top + 237},
                               muted, app->small_font);
                     }
-                    if (state == 2) {
+                    if (!compact && state == 2) {
                         const int start = row.left + 358;
                         const int end = row.right - 24;
                         rounded(item->hDC, RECT{start, row.bottom - 21, end, row.bottom - 13}, pale_blue, 8);
@@ -797,6 +1252,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                     }
                 }
                 if (item->itemState & ODS_FOCUS) DrawFocusRect(item->hDC, &row);
+                RestoreDC(item->hDC, saved_clip);
+                if (buffer_bitmap) {
+                    BitBlt(target_dc, visible.left, visible.top, visible.right - visible.left,
+                           visible.bottom - visible.top, buffer_dc, visible.left, visible.top, SRCCOPY);
+                    SelectObject(buffer_dc, old_bitmap);
+                    DeleteObject(buffer_bitmap);
+                }
+                if (buffer_dc) DeleteDC(buffer_dc);
                 return TRUE;
             }
             break;
@@ -807,13 +1270,14 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         case WM_COMMAND:
             switch (LOWORD(wparam)) {
                 case Browse: app->browse_folder(); break;
+                case Paste: app->paste_links(); break;
                 case Download: app->add(); break;
                 case Remove: app->erase(); break;
                 case Retry: app->retry_selected(); break;
                 case Open: app->open_folder(); break;
                 case Logs:
                     cryget::log_event("log.open", "user requested log folder");
-                    ShellExecuteW(window, L"open", cryget::log_path().parent_path().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    app->launch_folder(cryget::log_path().parent_path());
                     break;
                 case Up: app->move_selected(-1); break;
                 case Down: app->move_selected(1); break;
@@ -823,15 +1287,24 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                         app->translate();
                     }
                     break;
+                case List:
+                    if (HIWORD(wparam) == LBN_SELCHANGE) app->update_actions();
+                    break;
             }
+            return 0;
+        case playlist_message:
+            app->finish_playlist();
             return 0;
         case changed_message:
             app->refresh();
-            if (wparam) SendMessageW(app->list, LB_SETCURSEL, wparam - 1, 0);
+            if (wparam) {
+                SendMessageW(app->list, LB_SETCURSEL, wparam - 1, 0);
+                app->update_actions();
+            }
             return 0;
         case progress_message:
             app->progress_pending = false;
-            InvalidateRect(app->list, nullptr, FALSE);
+            app->invalidate_active_rows();
             return 0;
         case WM_TIMER:
             if (wparam == 1) {
@@ -846,7 +1319,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
                         if (now - task->speed_sample >= std::chrono::seconds(2)) task->speed = 0;
                     }
                 }
-                if (downloading) InvalidateRect(app->list, nullptr, FALSE);
+                if (downloading) app->invalidate_active_rows();
             }
             return 0;
         case WM_DESTROY:
@@ -867,8 +1340,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 }
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
-    cryget::log_event("app.start", "Windows WinHTTP");
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show) {
+    ui_self_test = command_line && std::wstring(command_line) == L"--ui-self-test";
+    cryget::log_event("app.start", "Windows WinHTTP" + std::string(ui_self_test ? " UI self-test" : ""));
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     WNDCLASSEXW type{};
     type.cbSize = sizeof(type);
@@ -885,11 +1359,158 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                                   CW_USEDEFAULT, CW_USEDEFAULT, 1080, 900, nullptr, nullptr, instance, nullptr);
     if (!window) return 1;
     ShowWindow(window, show);
+    if (ui_self_test) {
+        SetActiveWindow(window);
+        wchar_t temporary[MAX_PATH]{};
+        const DWORD temporary_length = GetTempPathW(MAX_PATH, temporary);
+        bool passed = temporary_length > 0 && temporary_length < MAX_PATH;
+        if (passed) {
+            SetWindowTextW(app->folder, temporary);
+            SendMessageW(app->browse, BM_CLICK, 0, 0);
+            passed = app->browse_requests == 1;
+        }
+        if (passed) {
+            const wchar_t* url = L"https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+            SendMessageW(app->quality, CB_SETCURSEL, 2, 0);
+            SetWindowTextW(app->links, url);
+            SendMessageW(app->download, BM_CLICK, 0, 0);
+            passed = app->tasks.size() == 1 && SendMessageW(app->list, LB_GETCOUNT, 0, 0) == 1 &&
+                     SendMessageW(app->list, LB_GETCURSEL, 0, 0) == 0 &&
+                     IsWindowEnabled(app->browse) && IsWindowEnabled(app->paste) &&
+                     IsWindowEnabled(app->download) &&
+                     IsWindowEnabled(app->logs) && IsWindowEnabled(app->remove) &&
+                     IsWindowEnabled(app->open) && !IsWindowEnabled(app->retry) &&
+                     !IsWindowEnabled(app->up) && !IsWindowEnabled(app->down) &&
+                     control_text(app->links).empty() && app->tasks.front()->quality == "720p" &&
+                     std::filesystem::equivalent(app->tasks.front()->folder, temporary);
+            if (passed) {
+                SendMessageW(app->open, BM_CLICK, 0, 0);
+                passed = app->folder_open_requests == 1 &&
+                         std::filesystem::equivalent(app->last_opened_folder, temporary);
+            }
+            if (passed) {
+                SendMessageW(app->logs, BM_CLICK, 0, 0);
+                passed = app->folder_open_requests == 2 &&
+                         app->last_opened_folder == cryget::log_path().parent_path();
+            }
+            if (passed) {
+                SetWindowTextW(app->links, url);
+                SendMessageW(app->download, BM_CLICK, 0, 0);
+                passed = app->tasks.size() == 1 && control_text(app->links) == url;
+            }
+            if (passed) {
+                const wchar_t* second = L"https://www.youtube.com/watch?v=9bZkp7q19f0";
+                SetWindowTextW(app->links, second);
+                SendMessageW(app->download, BM_CLICK, 0, 0);
+                passed = app->tasks.size() == 2 && SendMessageW(app->list, LB_GETCOUNT, 0, 0) == 2 &&
+                         SendMessageW(app->list, LB_GETCURSEL, 0, 0) == 1 &&
+                         IsWindowEnabled(app->up) && !IsWindowEnabled(app->down);
+            }
+            if (passed) {
+                const int rebuilds = app->list_rebuilds;
+                app->tasks.front()->title = "Updated title";
+                app->refresh();
+                passed = app->list_rebuilds == rebuilds &&
+                         SendMessageW(app->list, LB_GETCURSEL, 0, 0) == 1 &&
+                         IsWindowEnabled(app->up) && !IsWindowEnabled(app->down);
+            }
+            if (passed) {
+                SendMessageW(app->list, LB_SETCURSEL, 1, 0);
+                SendMessageW(app->up, BM_CLICK, 0, 0);
+                passed = app->tasks.front()->url.find("9bZkp7q19f0") != std::string::npos;
+            }
+            if (passed) {
+                SendMessageW(app->list, LB_SETCURSEL, 0, 0);
+                app->update_actions();
+                passed = IsWindowEnabled(app->down);
+                if (passed) SendMessageW(app->down, BM_CLICK, 0, 0);
+                passed = passed && app->tasks[1]->url.find("9bZkp7q19f0") != std::string::npos;
+            }
+            if (passed) {
+                SendMessageW(app->list, LB_SETCURSEL, 1, 0);
+                app->update_actions();
+                SendMessageW(app->up, BM_CLICK, 0, 0);
+                passed = app->tasks.front()->url.find("9bZkp7q19f0") != std::string::npos;
+            }
+            if (passed) {
+                app->tasks.front()->state = 4;
+                app->refresh();
+                SendMessageW(app->list, LB_SETCURSEL, 0, 0);
+                app->update_actions();
+                passed = IsWindowEnabled(app->retry);
+            }
+            if (passed) {
+                SendMessageW(app->retry, BM_CLICK, 0, 0);
+                passed = app->tasks.front()->state == 0 && !IsWindowEnabled(app->retry);
+            }
+            if (passed) {
+                SendMessageW(app->list, LB_SETCURSEL, 0, 0);
+                SendMessageW(app->remove, BM_CLICK, 0, 0);
+                passed = app->tasks.size() == 1 && SendMessageW(app->list, LB_GETCOUNT, 0, 0) == 1 &&
+                         SendMessageW(app->list, LB_GETCURSEL, 0, 0) == 0;
+            }
+            if (passed) {
+                SendMessageW(app->remove, BM_CLICK, 0, 0);
+                passed = app->tasks.empty() && SendMessageW(app->list, LB_GETCOUNT, 0, 0) == 0 &&
+                         !IsWindowEnabled(app->remove) && !IsWindowEnabled(app->open);
+            }
+            if (passed) {
+                SetWindowTextW(app->links, url);
+                SendMessageW(app->download, BM_CLICK, 0, 0);
+                app->tasks.front()->state = 4;
+                app->refresh();
+                SetWindowTextW(app->links, url);
+                SendMessageW(app->download, BM_CLICK, 0, 0);
+                passed = app->tasks.size() == 2 && app->tasks.front()->state == 4 &&
+                         app->tasks.back()->state == 0 && control_text(app->links).empty();
+                app->tasks.clear();
+                app->refresh();
+            }
+            if (passed) {
+                app->resize(800, 620);
+                for (int index = 0; index < 6; ++index) {
+                    auto task = std::make_shared<Task>();
+                    task->title = "Queue item " + std::to_string(index);
+                    app->tasks.push_back(std::move(task));
+                }
+                app->refresh();
+                SendMessageW(app->list, LB_SETCURSEL, 2, 0);
+                SendMessageW(app->list, LB_SETTOPINDEX, 2, 0);
+                app->refresh();
+                RECT viewport{}, row{};
+                GetClientRect(app->list, &viewport);
+                RECT actions{}, lower_actions{};
+                GetWindowRect(app->logs, &actions);
+                GetWindowRect(app->up, &lower_actions);
+                passed = SendMessageW(app->list, LB_GETCURSEL, 0, 0) == 2 &&
+                         SendMessageW(app->list, LB_GETTOPINDEX, 0, 0) == 2 &&
+                         SendMessageW(app->list, LB_GETITEMRECT, 2, reinterpret_cast<LPARAM>(&row)) != LB_ERR &&
+                         IsWindowVisible(app->list) && viewport.bottom >= 80 &&
+                         row.top < viewport.bottom && row.bottom > 0 &&
+                         row.bottom - row.top <= viewport.bottom &&
+                         lower_actions.top >= actions.bottom;
+                if (passed) {
+                    app->drawn_rows = 0;
+                    InvalidateRect(app->list, nullptr, TRUE);
+                    UpdateWindow(app->list);
+                    passed = app->drawn_rows > 0 && app->buffered_paints > 0;
+                }
+            }
+        }
+        cryget::log_event("ui.self_test", passed ? "passed" : "failed");
+        DestroyWindow(window);
+        CoUninitialize();
+        return passed ? 0 : 1;
+    }
+    ACCEL shortcut{static_cast<BYTE>(FVIRTKEY | FCONTROL), VK_RETURN, Download};
+    HACCEL shortcuts = CreateAcceleratorTableW(&shortcut, 1);
     MSG message;
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (shortcuts && TranslateAcceleratorW(window, shortcuts, &message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    if (shortcuts) DestroyAcceleratorTable(shortcuts);
     CoUninitialize();
     return static_cast<int>(message.wParam);
 }

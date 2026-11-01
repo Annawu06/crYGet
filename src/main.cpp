@@ -40,6 +40,7 @@
 #include "url_utils.hpp"
 #include "video_core.hpp"
 #include "video_links.hpp"
+#include "queue_priority.hpp"
 
 using cryget::parse_links;
 
@@ -58,9 +59,11 @@ struct Job {
     State state = State::Queued;
     double percent = 0;
     bool cancel = false;
+    bool requeue = false;
     std::atomic<bool> stop{false};
     std::shared_ptr<Thumbnail> thumbnail;
     bool preview_done = false;
+    bool preview_thumbnail_only = false;
     size_t saved_size = 0;
 };
 
@@ -157,6 +160,7 @@ static bool cancel_and_remove_job(const std::shared_ptr<Job>& job) {
     const auto entry = std::find(jobs.begin(), jobs.end(), job);
     if (entry == jobs.end()) return false;
     job->cancel = true;
+    job->requeue = false;
     if (job->state == State::Connecting || job->state == State::Downloading || job->state == State::Canceling) {
         job->state = State::Canceling;
         stopping_jobs.push_back(job);
@@ -278,7 +282,7 @@ static void preview_loop() {
             canceled = job->cancel;
         }
         std::shared_ptr<cryget::Video> video;
-        if (running && !canceled) {
+        if (running && !canceled && !job->preview_thumbnail_only) {
             try {
                 const auto id = job->url.substr(job->url.find_last_of('=') + 1);
                 video = std::make_shared<cryget::Video>(cryget::inspect_video(id, &job->stop));
@@ -292,12 +296,27 @@ static void preview_loop() {
     }
 }
 
+// Called only after the old worker has unwound and removed temporary files.
+static void download_failed(const std::shared_ptr<Job>& job, const std::string& error) {
+    if (job->requeue && !job->cancel && running) {
+        job->requeue = false;
+        job->stop = false;
+        job->state = State::Queued;
+        job->percent = 0;
+        job->progress.clear();
+        job->error.clear();
+    } else {
+        job->state = job->cancel ? State::Canceled : State::Failed;
+        if (!job->cancel) job->error = error;
+    }
+}
+
 static void download(const std::shared_ptr<Job>& job) {
     try {
         cryget::log_event("queue.start", job->url);
         {
             std::lock_guard lock(jobs_mutex);
-            if (job->cancel) { job->state = State::Canceled; return; }
+            if (job->stop) throw std::runtime_error("Download interrupted");
         }
         // Media URLs expire; inspect again when a queued download actually starts.
         const auto id = job->url.substr(job->url.find_last_of('=') + 1);
@@ -307,7 +326,7 @@ static void download(const std::shared_ptr<Job>& job) {
         const auto folder = cryget::checked_folder(job->folder);
         {
             std::lock_guard lock(jobs_mutex);
-            if (job->cancel) { job->state = State::Canceled; return; }
+            if (job->stop) throw std::runtime_error("Download interrupted");
             job->title = video->title;
             job->state = State::Downloading;
         }
@@ -324,11 +343,11 @@ static void download(const std::shared_ptr<Job>& job) {
         job->progress = size_text(job->saved_size);
         job->percent = 100;
         job->state = State::Complete;
+        job->requeue = false;
     } catch (const std::exception& error) {
         cryget::log_event("queue.error", job->url + " " + error.what());
         std::lock_guard lock(jobs_mutex);
-        job->state = job->cancel ? State::Canceled : State::Failed;
-        if (!job->cancel) job->error = error.what();
+        download_failed(job, error.what());
     }
 }
 
@@ -339,9 +358,21 @@ static std::vector<std::shared_ptr<Job>> reserve_downloads() {
         stopping_jobs.erase(std::remove_if(stopping_jobs.begin(), stopping_jobs.end(), [](const auto& job) {
             return job->state != State::Canceling;
         }), stopping_jobs.end());
+        const auto desired = cryget::priority_jobs(jobs, concurrency, [](const auto& job) {
+            return !job->cancel && (job->state == State::Queued || job->state == State::Connecting ||
+                job->state == State::Downloading || job->requeue);
+        });
+        for (const auto& job : jobs) {
+            if ((job->state == State::Connecting || job->state == State::Downloading) &&
+                std::find(desired.begin(), desired.end(), job) == desired.end()) {
+                job->requeue = true;
+                job->state = State::Canceling;
+                job->stop = true;
+            }
+        }
         int active = static_cast<int>(stopping_jobs.size());
         for (const auto& job : jobs) if (job->state == State::Connecting || job->state == State::Downloading || job->state == State::Canceling) ++active;
-        for (const auto& job : jobs) {
+        for (const auto& job : desired) {
             if (active >= concurrency) break;
             if (job->state == State::Queued) { job->state = State::Connecting; start.push_back(job); ++active; }
         }
@@ -362,7 +393,7 @@ static void schedule() {
             try { download(job); }
             catch (const std::exception& error) {
                 std::lock_guard lock(jobs_mutex);
-                job->error = error.what(); job->state = State::Failed;
+                download_failed(job, error.what());
             }
             finished->store(true);
         }), finished});
@@ -406,7 +437,13 @@ class App {
     unsigned long mint = 0, peach = 0, lavender = 0, shadow = 0, hover_fill = 0;
     std::array<unsigned long, 6> brand_colors{};
     Editor links, folder;
-    std::string notice_key, owned_clipboard;
+    std::string notice_key, notice_detail, owned_clipboard;
+    std::thread playlist_worker;
+    std::mutex playlist_mutex;
+    std::vector<std::string> playlist_urls;
+    std::string playlist_error, playlist_input, playlist_folder, playlist_quality;
+    bool playlist_ready = false, playlist_loading = false;
+    std::atomic<bool> playlist_cancel{false};
     int added_count = 0;
     size_t locale_index = 0;
     bool language_open = false;
@@ -944,7 +981,8 @@ class App {
             }
         }
         button(f.paste.x, f.paste.y, f.paste.w, f.paste.h, t("paste"), white, blue);
-        button(f.add.x, f.add.y, f.add.w, f.add.h, t("add"), pale, blue);
+        button(f.add.x, f.add.y, f.add.w, f.add.h,
+               playlist_loading ? t("playlist_loading") : t("add"), pale, blue);
         text(f.quality.x, f.quality.y - 28, t("quality"), muted);
         button(f.quality.x, f.quality.y, f.quality.w, f.quality.h,
                quality == "Best" ? t("best") : quality, lavender, ink, true, true);
@@ -954,8 +992,9 @@ class App {
                          label_baseline(f.folder.y, f.folder.h), f.folder.w - 40,
                          focus == Focus::Folder, visible_folder_start);
         button(f.browse.x, f.browse.y, f.browse.w, f.browse.h, t("browse"), mint, green);
-        if (!notice_key.empty()) text(l, f.panel.y + f.panel.h + 70,
-            fit_text(t(notice_key) + (notice_key == "added" ? ": " + std::to_string(added_count) : ""), w),
+        if (playlist_loading) text(l, f.panel.y + f.panel.h + 70, t("playlist_loading"), blue);
+        else if (!notice_key.empty() || !notice_detail.empty()) text(l, f.panel.y + f.panel.h + 70,
+            fit_text(notice_detail.empty() ? t(notice_key) + (notice_key == "added" ? ": " + std::to_string(added_count) : "") : notice_detail, w),
             notice_key == "added" ? green : red);
         large_text(l, library + 64, t("library"), heading_font, ink);
         const int logs_width = std::max(220, text_width(t("logs")) + 40);
@@ -1045,20 +1084,51 @@ class App {
         XFlush(display);
     }
     void add() {
+        if (playlist_loading) return;
+        notice_detail.clear();
         const bool has_playlist = cryget::contains_youtube_playlist(links.value);
-        std::vector<std::string> parsed;
-        try { parsed = cryget::expand_video_links(links.value); }
-        catch (const std::exception& error) {
-            cryget::log_event("playlist.expand_error", error.what());
-            notice_key = "invalid"; return;
-        }
-        if (parsed.empty()) { notice_key = "invalid"; return; }
-        try { folder.value = cryget::path_utf8(cryget::checked_folder(folder.value)); }
+        fs::path target;
+        try { target = cryget::checked_folder(folder.value); }
         catch (const std::exception& error) {
             cryget::log_event("queue.folder_error", error.what());
             notice_key = "folder_invalid";
             return;
         }
+        if (has_playlist) {
+            playlist_loading = true;
+            playlist_cancel = false;
+            playlist_input = links.value;
+            playlist_folder = cryget::path_utf8(target);
+            playlist_quality = quality;
+            notice_key.clear(); notice_detail.clear();
+            const auto input = playlist_input;
+            if (playlist_worker.joinable()) playlist_worker.join();
+            playlist_worker = std::thread([this, input] {
+                std::vector<std::string> urls;
+                std::string error;
+                try { urls = cryget::expand_video_links(input, &playlist_cancel); }
+                catch (const std::exception& exception) { error = exception.what(); }
+                std::lock_guard lock(playlist_mutex);
+                playlist_urls = std::move(urls);
+                playlist_error = std::move(error);
+                playlist_ready = true;
+            });
+            return;
+        }
+        std::vector<std::string> parsed;
+        try { parsed = cryget::expand_video_links(links.value); }
+        catch (const std::exception& error) {
+            cryget::log_event("playlist.expand_error", error.what());
+            notice_key.clear(); notice_detail = error.what(); return;
+        }
+        if (parsed.empty()) { notice_key = "invalid"; return; }
+        folder.value = cryget::path_utf8(target);
+        add_urls(parsed, false, folder.value, quality);
+    }
+
+    void add_urls(const std::vector<std::string>& parsed, bool has_playlist,
+                  const std::string& target_folder, const std::string& target_quality) {
+        if (parsed.empty()) { notice_key = "invalid"; return; }
         int added = 0;
         std::vector<std::shared_ptr<Job>> added_jobs;
         {
@@ -1069,22 +1139,44 @@ class App {
                 });
                 if (exists) continue;
                 auto job = std::make_shared<Job>();
-                job->url = url; job->quality = quality; job->folder = folder.value;
+                job->url = url; job->quality = target_quality; job->folder = target_folder;
+                job->preview_thumbnail_only = has_playlist;
                 jobs.push_back(job); added_jobs.push_back(job); ++added;
             }
         }
         {
             std::lock_guard lock(preview_mutex);
-            for (const auto& job : added_jobs) {
-                if (has_playlist) job->preview_done = true;
-                else preview_requests.push_back(job);
-            }
+            for (const auto& job : added_jobs) preview_requests.push_back(job);
         }
         preview_ready.notify_all();
         notice_key = added ? "added" : "duplicate";
         added_count = added;
-        if (added) { links.value.clear(); links.cursor = links.anchor = 0; }
+        if (added && (!has_playlist || links.value == playlist_input)) { links.value.clear(); links.cursor = links.anchor = 0; }
         schedule();
+    }
+
+    void finish_playlist() {
+        {
+            std::lock_guard lock(playlist_mutex);
+            if (!playlist_ready) return;
+        }
+        if (playlist_worker.joinable()) playlist_worker.join();
+        std::vector<std::string> urls;
+        std::string error;
+        {
+            std::lock_guard lock(playlist_mutex);
+            if (!playlist_ready) return;
+            urls = std::move(playlist_urls);
+            error = std::move(playlist_error);
+            playlist_ready = false;
+        }
+        playlist_loading = false;
+        if (!error.empty()) {
+            cryget::log_event("playlist.expand_error", error);
+            notice_key.clear(); notice_detail = error;
+            return;
+        }
+        add_urls(urls, true, playlist_folder, playlist_quality);
     }
     void action(const std::shared_ptr<Job>& job) {
         if (!job) return;
@@ -1163,6 +1255,7 @@ class App {
                 const bool after = columns() == 1 ? y + scroll > card_y(index) + card_height() / 2
                                                    : x > card_x(index) + card_width() / 2;
                 reorder_job(drag_source, target, after);
+                schedule();
             }
         }
         drag_source.reset(); drag_target.reset(); dragging = false;
@@ -1308,6 +1401,8 @@ public:
     }
     ~App() {
         running = false;
+        playlist_cancel = true;
+        if (playlist_worker.joinable()) playlist_worker.join();
         preview_ready.notify_all();
         {
             std::lock_guard lock(jobs_mutex);
@@ -1410,6 +1505,7 @@ public:
                 if (drag_target == drag_source) drag_target.reset();
             }
             schedule();
+            finish_playlist();
             paint();
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
@@ -1471,7 +1567,7 @@ static int self_test() {
     if (video.title != "Test 中文") return 5;
     if (cryget::choose_format(video, 720).height != 720 || cryget::choose_format(video, 360).height != 360) return 6;
     if (cryget::checked_folder("/tmp").empty()) return 11;
-    static const std::array<std::string, 36> keys{{"subtitle", "links", "placeholder", "add", "quality", "best",
+    static const std::array<std::string, 37> keys{{"subtitle", "links", "placeholder", "add", "playlist_loading", "quality", "best",
         "save", "hint", "empty", "queued", "connecting", "downloading", "canceling", "complete", "failed",
         "canceled", "open", "retry", "cancel", "invalid", "folder_invalid", "duplicate", "added", "preview",
         "browse", "choose_folder", "up", "use", "active_count", "waiting_count", "done_count",
@@ -1533,7 +1629,39 @@ static int self_test() {
     active->state = State::Canceled;
     reserve_downloads();
     if (!stopping_jobs.empty()) return 34;
+    // Dragging ahead of running jobs must preempt, then start only after cleanup.
+    first = std::make_shared<Job>(); second = std::make_shared<Job>(); third = std::make_shared<Job>();
+    jobs = {first, second, third};
+    if (reserve_downloads().size() != 2) return 35;
+    second->state = State::Downloading;
+    reorder_job(third, first, false);
+    if (!reserve_downloads().empty() || !second->stop || !second->requeue ||
+        second->state != State::Canceling || first->stop) return 36;
+    if (!reserve_downloads().empty()) return 37; // No premature third worker.
+    download_failed(second, "Download canceled");
+    const auto replacement = reserve_downloads();
+    if (replacement != std::vector<std::shared_ptr<Job>>{third} || second->state != State::Queued || second->stop) return 38;
+    // Reverse priority while another worker is already being interrupted.
+    reorder_job(second, third, false);
+    reserve_downloads();
+    if (!first->requeue || !first->stop) return 39;
+    reorder_job(first, second, false);
+    reserve_downloads();
+    if (!third->requeue || !third->stop || !first->stop) return 40;
+    download_failed(third, "Download canceled");
+    const auto restart_second = reserve_downloads();
+    if (restart_second != std::vector<std::shared_ptr<Job>>{second}) return 41;
+    download_failed(first, "Download canceled");
+    if (reserve_downloads() != std::vector<std::shared_ptr<Job>>{first}) return 42;
+    // Removing a preempted worker must never resurrect it in the queue.
+    reorder_job(third, first, false);
+    reserve_downloads();
+    if (!second->requeue || !cancel_and_remove_job(second)) return 43;
+    download_failed(second, "Download canceled");
+    if (second->state != State::Canceled || second->requeue) return 44;
+    reserve_downloads();
     jobs.clear();
+    stopping_jobs.clear();
     return 0;
 }
 
